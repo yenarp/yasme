@@ -1,0 +1,230 @@
+#ifndef YASME_IR_YIR_HH
+#define YASME_IR_YIR_HH
+
+#include <cstdint>
+#include <memory>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <variant>
+#include <vector>
+#include <yasme/support/Span.hh>
+
+namespace yasme::ir
+{
+	enum class UnaryOp
+	{
+		plus,
+		minus,
+		bit_not,
+		log_not,
+		at,
+	};
+
+	enum class BinaryOp
+	{
+		add,
+		sub,
+		mul,
+		div,
+		mod,
+
+		shl,
+		shr,
+
+		bit_and,
+		bit_or,
+		bit_xor,
+
+		log_and,
+		log_or,
+
+		eq,
+		ne,
+		lt,
+		le,
+		gt,
+		ge,
+
+		concat,
+	};
+
+	struct Expr;
+
+	struct ExprIdent
+	{
+		std::string name{};
+	};
+
+	struct ExprInt
+	{
+		std::int64_t value{};
+	};
+
+	struct ExprStr
+	{
+		std::string value{};
+	};
+
+	struct ExprUnary
+	{
+		UnaryOp op{};
+		std::unique_ptr<Expr> rhs{};
+	};
+
+	struct ExprBinary
+	{
+		BinaryOp op{};
+		std::unique_ptr<Expr> lhs{};
+		std::unique_ptr<Expr> rhs{};
+	};
+
+	struct Expr
+	{
+		SourceSpan span{};
+		std::variant<ExprIdent, ExprInt, ExprStr, ExprUnary, ExprBinary> node{};
+
+		Expr() = default;
+
+		Expr(SourceSpan s, ExprIdent v) : span(s), node(std::move(v)) {}
+		Expr(SourceSpan s, ExprInt v) : span(s), node(std::move(v)) {}
+		Expr(SourceSpan s, ExprStr v) : span(s), node(std::move(v)) {}
+		Expr(SourceSpan s, ExprUnary v) : span(s), node(std::move(v)) {}
+		Expr(SourceSpan s, ExprBinary v) : span(s), node(std::move(v)) {}
+	};
+
+	enum class DataUnit
+	{
+		u8,
+		u16,
+		u32,
+		u64,
+	};
+
+	enum class PostponeMode
+	{
+		at_end_each_pass,
+		after_stable,
+	};
+
+	struct Stmt;
+
+	using StmtPtr = std::unique_ptr<Stmt>;
+
+	struct StmtOrg
+	{
+		SourceSpan span{};
+		Expr address{};
+	};
+
+	struct StmtLabel
+	{
+		SourceSpan span{};
+		std::string name{};
+	};
+
+	struct StmtAssign
+	{
+		SourceSpan span{};
+		std::string name{};
+		Expr rhs{};
+	};
+
+	struct StmtDefine
+	{
+		SourceSpan span{};
+		std::string name{};
+		Expr value{};
+	};
+
+	struct StmtEmitData
+	{
+		SourceSpan span{};
+		DataUnit unit{};
+		std::vector<Expr> items{};
+	};
+
+	struct StmtVirtual
+	{
+		SourceSpan span{};
+		std::optional<Expr> name_expr{};
+		std::vector<StmtPtr> body{};
+	};
+
+	struct StmtPostpone
+	{
+		SourceSpan span{};
+		PostponeMode mode{PostponeMode::at_end_each_pass};
+		std::vector<StmtPtr> body{};
+	};
+
+	struct StmtEnd
+	{
+		SourceSpan span{};
+	};
+
+	struct Stmt
+	{
+		using Node = std::variant<StmtOrg,
+								  StmtLabel,
+								  StmtAssign,
+								  StmtDefine,
+								  StmtEmitData,
+								  StmtVirtual,
+								  StmtPostpone,
+								  StmtEnd>;
+
+		Node node{};
+
+		template <class T> explicit Stmt(T v) : node(std::move(v)) {}
+	};
+
+	struct Program
+	{
+		std::vector<StmtPtr> stmts{};
+	};
+
+	enum class IdentifierError
+	{
+		none,
+		empty,
+		bad_start,
+		bad_char,
+	};
+
+	struct IdentifierValidation
+	{
+		IdentifierError error{IdentifierError::none};
+		std::size_t position{};
+	};
+
+	[[nodiscard]] IdentifierValidation validate_identifier(std::string_view s) noexcept;
+	[[nodiscard]] bool is_valid_identifier(std::string_view s) noexcept;
+
+	[[nodiscard]] bool contains_space(std::string_view s) noexcept;
+
+	[[nodiscard]] constexpr bool is_literal(Expr const& e) noexcept
+	{
+		return std::holds_alternative<ExprInt>(e.node) || std::holds_alternative<ExprStr>(e.node);
+	}
+
+	[[nodiscard]] constexpr bool is_name_expr(Expr const& e) noexcept
+	{
+		if (std::holds_alternative<ExprIdent>(e.node))
+			return true;
+
+		if (auto const* u = std::get_if<ExprUnary>(&e.node))
+			return u->op == UnaryOp::at;
+
+		if (auto const* b = std::get_if<ExprBinary>(&e.node))
+			return b->op == BinaryOp::concat;
+
+		return false;
+	}
+
+	[[nodiscard]] std::string_view unary_op_spelling(UnaryOp op) noexcept;
+	[[nodiscard]] std::string_view binary_op_spelling(BinaryOp op) noexcept;
+
+} // namespace yasme::ir
+
+#endif /* YASME_IR_YIR_HH */
