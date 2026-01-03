@@ -1,5 +1,7 @@
 #include <algorithm>
+#include <cctype>
 #include <limits>
+#include <optional>
 #include <string_view>
 #include <utility>
 #include <yasme/asm/Assembler.hh>
@@ -342,8 +344,39 @@ namespace yasme
 			return;
 		}
 
-		if (st.symbols.contains(s.name))
+		auto it = st.symbols.find(s.name);
+		if (it != st.symbols.end())
 		{
+			auto const k = it->second.kind;
+			if (k != SymbolKind::define_numeric && k != SymbolKind::define_string)
+			{
+				error(st, s.span, "redefinition of a symbol");
+				return;
+			}
+
+			if (ir::is_name_expr(s.value))
+			{
+				error(st,
+					  s.value.span,
+					  "define value must be a numeric or string constant, not a name expression");
+				return;
+			}
+
+			auto v = eval_value(st, s.value);
+			if (is_unknown(v))
+			{
+				error(st, s.value.span, "define value must be fully resolved in the current pass");
+				return;
+			}
+
+			if (k == SymbolKind::define_numeric && is_int(v) && is_int(it->second.value)
+				&& std::get<std::int64_t>(v) == std::get<std::int64_t>(it->second.value))
+				return;
+
+			if (k == SymbolKind::define_string && is_str(v) && is_str(it->second.value)
+				&& std::get<std::string>(v) == std::get<std::string>(it->second.value))
+				return;
+
 			error(st, s.span, "redefinition of a symbol");
 			return;
 		}
@@ -701,23 +734,66 @@ namespace yasme
 
 					if (op == ir::BinaryOp::concat)
 					{
-						auto lhs = eval_value(st, *b.lhs);
-						auto rhs = eval_value(st, *b.rhs);
-						if (is_unknown(lhs) || is_unknown(rhs))
+						auto join_ident = [](std::string_view a,
+											 std::string_view b) -> std::string {
+							std::string out;
+							out.reserve(a.size() + b.size() + 1);
+							out.append(a);
+
+							if (!a.empty() && !b.empty())
+							{
+								auto const la = static_cast<unsigned char>(a.back());
+								auto const rb = static_cast<unsigned char>(b.front());
+
+								if (a.back() != '_' && b.front() != '_' && std::isalnum(la)
+									&& std::isalnum(rb))
+									out.push_back('_');
+							}
+
+							out.append(b);
+							return out;
+						};
+
+						auto to_part = [&](auto&& self,
+										   ir::Expr const& part) -> std::optional<std::string> {
+							if (auto const* id = std::get_if<ir::ExprIdent>(&part.node))
+							{
+								if (!st.symbols.contains(id->name))
+									return id->name;
+							}
+
+							if (auto const* cb = std::get_if<ir::ExprBinary>(&part.node))
+							{
+								if (cb->op == ir::BinaryOp::concat)
+								{
+									auto l = self(self, *cb->lhs);
+									auto r = self(self, *cb->rhs);
+									if (!l || !r)
+										return std::nullopt;
+
+									return join_ident(*l, *r);
+								}
+							}
+
+							auto v = eval_value(st, part);
+							if (is_unknown(v))
+								return std::nullopt;
+
+							if (!is_int(v) && !is_str(v))
+							{
+								error(st, part.span, "concat expects int or string operands");
+								return std::nullopt;
+							}
+
+							return value_to_string(v);
+						};
+
+						auto lhs_s = to_part(to_part, *b.lhs);
+						auto rhs_s = to_part(to_part, *b.rhs);
+						if (!lhs_s || !rhs_s)
 							return Unknown{};
 
-						if (!is_int(lhs) && !is_str(lhs))
-						{
-							error(st, b.lhs->span, "concat expects int or string operands");
-							return Unknown{};
-						}
-						if (!is_int(rhs) && !is_str(rhs))
-						{
-							error(st, b.rhs->span, "concat expects int or string operands");
-							return Unknown{};
-						}
-
-						return value_to_string(lhs) + value_to_string(rhs);
+						return join_ident(*lhs_s, *rhs_s);
 					}
 
 					auto lhs = eval_value(st, *b.lhs);

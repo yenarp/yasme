@@ -1,0 +1,5 @@
+db 0x01
+postpone
+	db 0x02
+end postpone
+db 0x03

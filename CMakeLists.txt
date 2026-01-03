@@ -151,3 +151,8 @@ if(TARGET yasme_cli)
 		RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 	)
 endif()
+
+include(CTest)
+if(BUILD_TESTING)
+	add_subdirectory(tests)
+endif()

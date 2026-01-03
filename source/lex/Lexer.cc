@@ -1,3 +1,4 @@
+#include <cstdint>
 #include <limits>
 #include <yasme/lex/Lexer.hh>
 #include <yasme/support/Ctype.hh>
@@ -378,6 +379,7 @@ namespace yasme::lex
 		auto t = make(TokenKind::integer, begin, end);
 
 		auto s = t.lexeme;
+		bool had_prefix = false;
 
 		if (s.size() >= 2 && s[0] == '0')
 		{
@@ -386,20 +388,23 @@ namespace yasme::lex
 			{
 				base = NumberBase::hexadecimal;
 				s.remove_prefix(2);
+				had_prefix = true;
 			}
 			else if (p == 'b')
 			{
 				base = NumberBase::binary;
 				s.remove_prefix(2);
+				had_prefix = true;
 			}
 			else if (p == 'o')
 			{
 				base = NumberBase::octal;
 				s.remove_prefix(2);
+				had_prefix = true;
 			}
 		}
 
-		if (!s.empty())
+		if (!s.empty() && !had_prefix)
 		{
 			auto suf = ascii_tolower(s.back());
 			if (suf == 'h')
