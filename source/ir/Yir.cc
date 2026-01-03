@@ -1,5 +1,5 @@
-#include <yasme/ir/yir.hh>
-#include <yasme/support/ctype.hh>
+#include <yasme/ir/Yir.hh>
+#include <yasme/support/Ctype.hh>
 
 namespace yasme::ir
 {
@@ -32,6 +32,18 @@ namespace yasme::ir
 				return true;
 
 		return false;
+	}
+
+	std::string_view builtin_kind_spelling(BuiltinKind k) noexcept
+	{
+		switch (k)
+		{
+			case BuiltinKind::dollar_address:
+				return "$";
+			case BuiltinKind::stream_offset:
+				return "@$";
+		}
+		return "?";
 	}
 
 	std::string_view unary_op_spelling(UnaryOp op) noexcept

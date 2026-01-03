@@ -1,6 +1,6 @@
 #include <limits>
-#include <yasme/lex/lexer.hh>
-#include <yasme/support/ctype.hh>
+#include <yasme/lex/Lexer.hh>
+#include <yasme/support/Ctype.hh>
 
 namespace yasme::lex
 {

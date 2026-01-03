@@ -1,6 +1,7 @@
 #ifndef YASME_IR_YIR_HH
 #define YASME_IR_YIR_HH
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -49,6 +50,12 @@ namespace yasme::ir
 		concat,
 	};
 
+	enum class BuiltinKind
+	{
+		dollar_address,
+		stream_offset,
+	};
+
 	struct Expr;
 
 	struct ExprIdent
@@ -64,6 +71,11 @@ namespace yasme::ir
 	struct ExprStr
 	{
 		std::string value{};
+	};
+
+	struct ExprBuiltin
+	{
+		BuiltinKind kind{};
 	};
 
 	struct ExprUnary
@@ -82,13 +94,14 @@ namespace yasme::ir
 	struct Expr
 	{
 		SourceSpan span{};
-		std::variant<ExprIdent, ExprInt, ExprStr, ExprUnary, ExprBinary> node{};
+		std::variant<ExprIdent, ExprInt, ExprStr, ExprBuiltin, ExprUnary, ExprBinary> node{};
 
 		Expr() = default;
 
 		Expr(SourceSpan s, ExprIdent v) : span(s), node(std::move(v)) {}
 		Expr(SourceSpan s, ExprInt v) : span(s), node(std::move(v)) {}
 		Expr(SourceSpan s, ExprStr v) : span(s), node(std::move(v)) {}
+		Expr(SourceSpan s, ExprBuiltin v) : span(s), node(std::move(v)) {}
 		Expr(SourceSpan s, ExprUnary v) : span(s), node(std::move(v)) {}
 		Expr(SourceSpan s, ExprBinary v) : span(s), node(std::move(v)) {}
 	};
@@ -221,6 +234,13 @@ namespace yasme::ir
 
 		return false;
 	}
+
+	[[nodiscard]] constexpr bool is_builtin(Expr const& e) noexcept
+	{
+		return std::holds_alternative<ExprBuiltin>(e.node);
+	}
+
+	[[nodiscard]] std::string_view builtin_kind_spelling(BuiltinKind k) noexcept;
 
 	[[nodiscard]] std::string_view unary_op_spelling(UnaryOp op) noexcept;
 	[[nodiscard]] std::string_view binary_op_spelling(BinaryOp op) noexcept;

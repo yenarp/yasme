@@ -6,7 +6,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
-#include <yasme/lex/tokens.hh>
+#include <yasme/lex/Tokens.hh>
 #include <yasme/support/SourceManager.hh>
 
 namespace yasme::lex

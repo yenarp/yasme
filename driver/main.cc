@@ -1,618 +1,289 @@
 #include <cstddef>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <iostream>
+#include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
-#include <yasme/lex/lexer.hh>
-#include <yasme/lex/tokens.hh>
+#include <yasme/Diagnostics.hh>
+#include <yasme/asm/Assembler.hh>
+#include <yasme/ir/Parser.hh>
 #include <yasme/support/SourceManager.hh>
 
 namespace
 {
-	using yasme::FileId;
-	using yasme::SourceManager;
-
-	using yasme::lex::Lexer;
-	using yasme::lex::LexerOptions;
-	using yasme::lex::NumberBase;
-	using yasme::lex::Token;
-	using yasme::lex::token_kind_name;
-	using yasme::lex::TokenKind;
-
-	struct ExpectedToken
+	struct CliOptions
 	{
-		TokenKind kind{};
-		std::string_view lexeme{};
+		std::string input{};
+		std::string output{};
 
-		bool check_lexeme{true};
+		std::size_t max_passes{100};
+		bool error_on_unresolved{true};
+		bool run_final_postpone{true};
 
-		bool check_int{};
-		std::uint64_t int_value{};
-		NumberBase int_base{NumberBase::decimal};
+		yasme::ColorMode color{yasme::ColorMode::auto_detect};
+		bool show_help{};
+		bool show_version{};
 	};
 
-	struct ExpectedError
+	[[nodiscard]] std::string_view exe_basename(std::string_view p) noexcept
 	{
-		std::string_view contains{};
-	};
-
-	struct TestCase
-	{
-		std::string_view name{};
-		std::string source{};
-		LexerOptions opt{};
-
-		std::vector<ExpectedToken> tokens{};
-		std::vector<ExpectedError> errors{};
-	};
-
-	static std::string_view number_base_name(NumberBase b) noexcept
-	{
-		switch (b)
-		{
-			case NumberBase::binary:
-				return "bin";
-			case NumberBase::octal:
-				return "oct";
-			case NumberBase::decimal:
-				return "dec";
-			case NumberBase::hexadecimal:
-				return "hex";
-		}
-		return "unknown";
+		auto const pos = p.find_last_of("/\\");
+		if (pos == std::string_view::npos)
+			return p;
+		return p.substr(pos + 1);
 	}
 
-	static void dump_token(std::ostream& os, Token const& t)
+	void print_help(std::ostream& os, std::string_view exe)
 	{
-		os << token_kind_name(t.kind) << " `" << t.lexeme << "`";
-		if (t.kind == TokenKind::integer)
-		{
-			os << " (value=" << t.integer.value << " base=" << number_base_name(t.integer.base)
-			   << " overflow=" << (t.integer.overflow ? "true" : "false") << ")";
-		}
-		os << " @ " << t.span.begin.line << ":" << t.span.begin.column;
+		os << "usage: " << exe << " [options] <input>\n\n"
+		   << "options:\n"
+		   << "  -o, --output <file>        output file\n"
+		   << "      --max-passes <n>       maximum assembly passes\n"
+		   << "      --no-error-unresolved  do not error on unresolved symbols in final pass\n"
+		   << "      --no-final-postpone    do not run 'postpone !' finalization blocks\n"
+		   << "      --color <auto|always|never>\n"
+		   << "  -h, --help                 show this help\n"
+		   << "      --version              show version\n";
 	}
 
-	static bool token_matches(Token const& got, ExpectedToken const& exp)
+	void print_version(std::ostream& os, std::string_view exe)
 	{
-		if (got.kind != exp.kind)
+		os << exe << " (yasme) version 0.0.1\n";
+	}
+
+	[[nodiscard]] bool parse_u64(std::string_view s, std::uint64_t& out) noexcept
+	{
+		if (s.empty())
 			return false;
 
-		if (exp.check_lexeme && got.lexeme != exp.lexeme)
-			return false;
-
-		if (exp.check_int)
+		std::uint64_t v = 0;
+		for (char ch : s)
 		{
-			if (got.kind != TokenKind::integer)
+			if (ch < '0' || ch > '9')
 				return false;
-			if (got.integer.value != exp.int_value)
+
+			auto const digit = static_cast<std::uint64_t>(ch - '0');
+
+			if (v > (std::numeric_limits<std::uint64_t>::max() - digit) / 10)
 				return false;
-			if (got.integer.base != exp.int_base)
-				return false;
+
+			v = v * 10 + digit;
 		}
 
+		out = v;
 		return true;
 	}
 
-	static bool error_matches(std::string_view msg, ExpectedError const& exp)
+	[[nodiscard]] std::optional<std::string_view> take_value(int& i, int argc, char** argv)
 	{
-		if (exp.contains.empty())
-			return true;
+		if (i + 1 >= argc)
+			return std::nullopt;
 
-		return msg.find(exp.contains) != std::string_view::npos;
+		++i;
+		return std::string_view(argv[i]);
 	}
 
-	static bool run_one(SourceManager& sm, TestCase const& tc)
+	[[nodiscard]] std::optional<CliOptions> parse_args(int argc, char** argv)
 	{
-		auto const id = sm.add_virtual(std::string(tc.name), tc.source);
+		CliOptions opt{};
 
-		Lexer lx(sm, id, tc.opt);
-
-		std::vector<Token> got_tokens{};
-		for (;;)
+		for (int i = 1; i < argc; ++i)
 		{
-			auto t = lx.next();
-			got_tokens.push_back(t);
-			if (t.kind == TokenKind::eof)
-				break;
-		}
+			std::string_view a(argv[i]);
 
-		bool ok = true;
-
-		auto const n = tc.tokens.size();
-		auto const m = got_tokens.size();
-
-		if (n != m)
-			ok = false;
-
-		auto const k = (n < m) ? n : m;
-		for (std::size_t i = 0; i < k; ++i)
-		{
-			if (!token_matches(got_tokens[i], tc.tokens[i]))
+			if (a == "-h" || a == "--help")
 			{
-				ok = false;
+				opt.show_help = true;
+				return opt;
+			}
 
-				std::cout << "\n[" << tc.name << "] mismatch at token " << i << "\n";
-				std::cout << "  expected: " << token_kind_name(tc.tokens[i].kind);
-				if (tc.tokens[i].check_lexeme)
-					std::cout << " `" << tc.tokens[i].lexeme << "`";
-				if (tc.tokens[i].check_int)
-				{
-					std::cout << " (value=" << tc.tokens[i].int_value
-							  << " base=" << number_base_name(tc.tokens[i].int_base) << ")";
-				}
-				std::cout << "\n  got:      ";
-				dump_token(std::cout, got_tokens[i]);
-				std::cout << "\n";
-				break;
+			if (a == "--version")
+			{
+				opt.show_version = true;
+				return opt;
+			}
+
+			if (a == "-o" || a == "--output")
+			{
+				auto v = take_value(i, argc, argv);
+				if (!v)
+					return std::nullopt;
+
+				opt.output = std::string(*v);
+				continue;
+			}
+
+			if (a == "--max-passes")
+			{
+				auto v = take_value(i, argc, argv);
+				if (!v)
+					return std::nullopt;
+
+				std::uint64_t n = 0;
+				if (!parse_u64(*v, n))
+					return std::nullopt;
+
+				opt.max_passes = static_cast<std::size_t>(n);
+				continue;
+			}
+
+			if (a == "--no-error-unresolved")
+			{
+				opt.error_on_unresolved = false;
+				continue;
+			}
+
+			if (a == "--no-final-postpone")
+			{
+				opt.run_final_postpone = false;
+				continue;
+			}
+
+			if (a == "--color")
+			{
+				auto v = take_value(i, argc, argv);
+				if (!v)
+					return std::nullopt;
+
+				if (*v == "auto")
+					opt.color = yasme::ColorMode::auto_detect;
+				else if (*v == "always")
+					opt.color = yasme::ColorMode::always;
+				else if (*v == "never")
+					opt.color = yasme::ColorMode::never;
+				else
+					return std::nullopt;
+
+				continue;
+			}
+
+			if (!a.empty() && a.front() == '-')
+			{
+				return std::nullopt;
+			}
+
+			if (opt.input.empty())
+			{
+				opt.input = std::string(a);
+			}
+			else
+			{
+				return std::nullopt;
 			}
 		}
 
-		auto got_errs = lx.errors();
-		if (got_errs.size() != tc.errors.size())
-		{
-			ok = false;
-			std::cout << "\n[" << tc.name << "] error count mismatch\n";
-			std::cout << "  expected: " << tc.errors.size() << "\n";
-			std::cout << "  got:      " << got_errs.size() << "\n";
-		}
+		if (opt.input.empty() && !opt.show_help && !opt.show_version)
+			return std::nullopt;
 
-		auto const ek = (tc.errors.size() < got_errs.size()) ? tc.errors.size() : got_errs.size();
-		for (std::size_t i = 0; i < ek; ++i)
-		{
-			if (!error_matches(got_errs[i].message, tc.errors[i]))
-			{
-				ok = false;
-				std::cout << "\n[" << tc.name << "] error " << i << " mismatch\n";
-				std::cout << "  expected contains: `" << tc.errors[i].contains << "`\n";
-				std::cout << "  got:              `" << got_errs[i].message << "`\n";
-				break;
-			}
-		}
-
-		if (!ok)
-		{
-			std::cout << "\n[" << tc.name << "] --- got tokens (" << got_tokens.size() << ") ---\n";
-			for (std::size_t i = 0; i < got_tokens.size(); ++i)
-			{
-				std::cout << i << ": ";
-				dump_token(std::cout, got_tokens[i]);
-				std::cout << "\n";
-			}
-
-			if (!got_errs.empty())
-			{
-				std::cout << "\n[" << tc.name << "] --- lexer errors ---\n";
-				for (auto const& e : got_errs)
-				{
-					std::cout << e.span.begin.line << ":" << e.span.begin.column << ": "
-							  << e.message << "\n";
-				}
-			}
-		}
-
-		return ok;
+		return opt;
 	}
 
-	static ExpectedToken tok(TokenKind k, std::string_view lex)
+	void emit_parse_errors(yasme::Diagnostics& diag, std::span<const yasme::ir::ParseError> errs)
 	{
-		ExpectedToken e{};
-		e.kind = k;
-		e.lexeme = lex;
-		return e;
-	}
-
-	static ExpectedToken tokk(TokenKind k)
-	{
-		ExpectedToken e{};
-		e.kind = k;
-		e.check_lexeme = false;
-		return e;
-	}
-
-	static ExpectedToken inttok(std::string_view lex, std::uint64_t v, NumberBase b)
-	{
-		ExpectedToken e{};
-		e.kind = TokenKind::integer;
-		e.lexeme = lex;
-		e.check_int = true;
-		e.int_value = v;
-		e.int_base = b;
-		return e;
+		for (auto const& e : errs)
+		{
+			yasme::Diagnostic d{};
+			d.level = yasme::DiagnosticLevel::error;
+			d.message = e.message;
+			d.primary = e.span;
+			diag.emit(d);
+		}
 	}
 
 } // namespace
 
-int main()
+int main(int argc, char** argv)
 {
-	using NB = NumberBase;
+	auto const exe =
+		exe_basename((argc > 0) ? std::string_view(argv[0]) : std::string_view("yasme"));
 
-	SourceManager sm;
-
-	std::vector<TestCase> tests{};
-
+	auto parsed = parse_args(argc, argv);
+	if (!parsed)
 	{
-		TestCase tc{};
-		tc.name = "blocks_virtual_postpone";
-		tc.opt.emit_newlines = true;
-		tc.opt.case_insensitive_keywords = true;
-		tc.opt.enable_c_comments = true;
-
-		tc.source = "org 0x100\n"
-					"db 1 ; emitted to output\n"
-					"\n"
-					"virtual block_name\n"
-					"    db 0x90, 10, 'A' ; inside virtual stream\n"
-					"    dw 0b1010_0101\n"
-					"end virtual\n"
-					"\n"
-					"postpone\n"
-					"    dd 200h\n"
-					"end postpone\n"
-					"\n"
-					"postpone !\n"
-					"    dq 101b\n"
-					"end postpone\n"
-					"\n"
-					"define foo, 1\n"
-					"end\n";
-
-		tc.tokens = {
-			tok(TokenKind::kw_org, "org"),
-			inttok("0x100", 256, NB::hexadecimal),
-			tok(TokenKind::newline, "\n"),
-
-			tok(TokenKind::kw_db, "db"),
-			inttok("1", 1, NB::decimal),
-			tok(TokenKind::newline, "\n"),
-
-			tok(TokenKind::newline, "\n"),
-
-			tok(TokenKind::kw_virtual, "virtual"),
-			tok(TokenKind::identifier, "block_name"),
-			tok(TokenKind::newline, "\n"),
-
-			tok(TokenKind::kw_db, "db"),
-			inttok("0x90", 144, NB::hexadecimal),
-			tok(TokenKind::comma, ","),
-			inttok("10", 10, NB::decimal),
-			tok(TokenKind::comma, ","),
-			tok(TokenKind::char_literal, "'A'"),
-			tok(TokenKind::newline, "\n"),
-
-			tok(TokenKind::kw_dw, "dw"),
-			inttok("0b1010_0101", 165, NB::binary),
-			tok(TokenKind::newline, "\n"),
-
-			tok(TokenKind::kw_end, "end"),
-			tok(TokenKind::kw_virtual, "virtual"),
-			tok(TokenKind::newline, "\n"),
-
-			tok(TokenKind::newline, "\n"),
-
-			tok(TokenKind::kw_postpone, "postpone"),
-			tok(TokenKind::newline, "\n"),
-
-			tok(TokenKind::kw_dd, "dd"),
-			inttok("200h", 512, NB::hexadecimal),
-			tok(TokenKind::newline, "\n"),
-
-			tok(TokenKind::kw_end, "end"),
-			tok(TokenKind::kw_postpone, "postpone"),
-			tok(TokenKind::newline, "\n"),
-
-			tok(TokenKind::newline, "\n"),
-
-			tok(TokenKind::kw_postpone, "postpone"),
-			tok(TokenKind::bang, "!"),
-			tok(TokenKind::newline, "\n"),
-
-			tok(TokenKind::kw_dq, "dq"),
-			inttok("101b", 5, NB::binary),
-			tok(TokenKind::newline, "\n"),
-
-			tok(TokenKind::kw_end, "end"),
-			tok(TokenKind::kw_postpone, "postpone"),
-			tok(TokenKind::newline, "\n"),
-
-			tok(TokenKind::newline, "\n"),
-
-			tok(TokenKind::kw_define, "define"),
-			tok(TokenKind::identifier, "foo"),
-			tok(TokenKind::comma, ","),
-			inttok("1", 1, NB::decimal),
-			tok(TokenKind::newline, "\n"),
-
-			tok(TokenKind::kw_end, "end"),
-			tok(TokenKind::newline, "\n"),
-
-			tok(TokenKind::eof, ""),
-		};
-
-		tests.push_back(std::move(tc));
+		print_help(std::cerr, exe);
+		return 1;
 	}
 
+	auto opt = *parsed;
+
+	if (opt.output.empty())
 	{
-		TestCase tc{};
-		tc.name = "case_insensitive_keywords";
-		tc.opt.emit_newlines = true;
-		tc.opt.case_insensitive_keywords = true;
-		tc.opt.enable_c_comments = true;
+		auto out = opt.input;
 
-		tc.source = "OrG 0x10\n"
-					"ViRtUaL Name\n"
-					"EnD vIrTuAl\n"
-					"PoStPoNe !\n"
-					"EnD pOsTpOnE\n"
-					"eNd\n";
+		if (out.size() >= 4 && out.ends_with(".asm"))
+			out.resize(out.size() - 4);
 
-		tc.tokens = {
-			tok(TokenKind::kw_org, "OrG"),
-			inttok("0x10", 16, NB::hexadecimal),
-			tok(TokenKind::newline, "\n"),
-
-			tok(TokenKind::kw_virtual, "ViRtUaL"),
-			tok(TokenKind::identifier, "Name"),
-			tok(TokenKind::newline, "\n"),
-
-			tok(TokenKind::kw_end, "EnD"),
-			tok(TokenKind::kw_virtual, "vIrTuAl"),
-			tok(TokenKind::newline, "\n"),
-
-			tok(TokenKind::kw_postpone, "PoStPoNe"),
-			tok(TokenKind::bang, "!"),
-			tok(TokenKind::newline, "\n"),
-
-			tok(TokenKind::kw_end, "EnD"),
-			tok(TokenKind::kw_postpone, "pOsTpOnE"),
-			tok(TokenKind::newline, "\n"),
-
-			tok(TokenKind::kw_end, "eNd"),
-			tok(TokenKind::newline, "\n"),
-
-			tok(TokenKind::eof, ""),
-		};
-
-		tests.push_back(std::move(tc));
+		opt.output = out;
 	}
 
+	if (opt.show_help)
 	{
-		TestCase tc{};
-		tc.name = "operators";
-		tc.opt.emit_newlines = true;
-		tc.opt.case_insensitive_keywords = true;
-		tc.opt.enable_c_comments = true;
-
-		tc.source = "a<<b>>c<=d>=e==f!=g&&h||i\n";
-
-		tc.tokens = {
-			tok(TokenKind::identifier, "a"), tok(TokenKind::shl, "<<"),
-			tok(TokenKind::identifier, "b"), tok(TokenKind::shr, ">>"),
-			tok(TokenKind::identifier, "c"), tok(TokenKind::le, "<="),
-			tok(TokenKind::identifier, "d"), tok(TokenKind::ge, ">="),
-			tok(TokenKind::identifier, "e"), tok(TokenKind::eqeq, "=="),
-			tok(TokenKind::identifier, "f"), tok(TokenKind::ne, "!="),
-			tok(TokenKind::identifier, "g"), tok(TokenKind::andand, "&&"),
-			tok(TokenKind::identifier, "h"), tok(TokenKind::oror, "||"),
-			tok(TokenKind::identifier, "i"), tok(TokenKind::newline, "\n"),
-			tok(TokenKind::eof, ""),
-		};
-
-		tests.push_back(std::move(tc));
+		print_help(std::cout, exe);
+		return 0;
 	}
 
+	if (opt.show_version)
 	{
-		TestCase tc{};
-		tc.name = "dot_vs_identifier";
-		tc.opt.emit_newlines = true;
-		tc.opt.case_insensitive_keywords = true;
-		tc.opt.enable_c_comments = true;
-
-		tc.source = "foo.bar .local\n"
-					".\n";
-
-		tc.tokens = {
-			tok(TokenKind::identifier, "foo.bar"),
-			tok(TokenKind::identifier, ".local"),
-			tok(TokenKind::newline, "\n"),
-			tok(TokenKind::dot, "."),
-			tok(TokenKind::newline, "\n"),
-			tok(TokenKind::eof, ""),
-		};
-
-		tests.push_back(std::move(tc));
+		print_version(std::cout, exe);
+		return 0;
 	}
 
+	yasme::SourceManager sources{};
+	yasme::Diagnostics diag(sources, std::cerr);
+	diag.set_color_mode(opt.color);
+
+	auto in_id_res = sources.open_read(opt.input);
+	if (!in_id_res.ok())
 	{
-		TestCase tc{};
-		tc.name = "numbers_various";
-		tc.opt.emit_newlines = true;
-		tc.opt.case_insensitive_keywords = true;
-		tc.opt.enable_c_comments = true;
+		std::cerr << exe << ": error: failed to open input '" << opt.input
+				  << "': " << in_id_res.err() << "\n";
+		return 1;
+	}
+	auto const in_id = in_id_res.value();
 
-		tc.source = "db 200h, 101b, 77o, 42d, 0o77, 0b1_0_1, 0xdead_beef\n";
+	yasme::ir::Parser parser(sources, in_id);
+	auto parse_res = parser.parse_program();
 
-		tc.tokens = {
-			tok(TokenKind::kw_db, "db"),
-			inttok("200h", 512, NB::hexadecimal),
-			tok(TokenKind::comma, ","),
-			inttok("101b", 5, NB::binary),
-			tok(TokenKind::comma, ","),
-			inttok("77o", 63, NB::octal),
-			tok(TokenKind::comma, ","),
-			inttok("42d", 42, NB::decimal),
-			tok(TokenKind::comma, ","),
-			inttok("0o77", 63, NB::octal),
-			tok(TokenKind::comma, ","),
-			inttok("0b1_0_1", 5, NB::binary),
-			tok(TokenKind::comma, ","),
-			inttok("0xdead_beef", 3735928559, NB::hexadecimal),
-			tok(TokenKind::newline, "\n"),
-			tok(TokenKind::eof, ""),
-		};
-
-		tests.push_back(std::move(tc));
+	if (!parse_res.errors.empty())
+	{
+		emit_parse_errors(diag, parse_res.errors);
+		return 1;
 	}
 
+	yasme::Assembler assembler(diag);
+
+	yasme::AssembleOptions asm_opt{};
+	asm_opt.max_passes = opt.max_passes;
+	asm_opt.error_on_unresolved = opt.error_on_unresolved;
+	asm_opt.run_final_postpone = opt.run_final_postpone;
+
+	auto out = assembler.assemble(parse_res.program, asm_opt);
+
+	if (diag.error_count() != 0 || out.errors != 0)
+		return 1;
+
+	auto out_id_res = sources.open_write(opt.output);
+	if (!out_id_res.ok())
 	{
-		TestCase tc{};
-		tc.name = "semicolon_is_comment";
-		tc.opt.emit_newlines = true;
-		tc.opt.case_insensitive_keywords = true;
-		tc.opt.enable_c_comments = true;
+		std::cerr << exe << ": error: failed to open output '" << opt.output
+				  << "': " << out_id_res.err() << "\n";
+		return 1;
+	}
+	auto const out_id = out_id_res.value();
 
-		tc.source = "db 1;comment\n"
-					"db 2 ; comment\n";
-
-		tc.tokens = {
-			tok(TokenKind::kw_db, "db"),
-			inttok("1", 1, NB::decimal),
-			tok(TokenKind::newline, "\n"),
-
-			tok(TokenKind::kw_db, "db"),
-			inttok("2", 2, NB::decimal),
-			tok(TokenKind::newline, "\n"),
-
-			tok(TokenKind::eof, ""),
-		};
-
-		tests.push_back(std::move(tc));
+	auto* w = sources.writer(out_id);
+	if (w == nullptr)
+	{
+		std::cerr << exe << ": error: internal: output file handle not available\n";
+		return 1;
 	}
 
-	{
-		TestCase tc{};
-		tc.name = "c_comments_enabled";
-		tc.opt.emit_newlines = true;
-		tc.opt.case_insensitive_keywords = true;
-		tc.opt.enable_c_comments = true;
+	const auto bytes = std::span<std::uint8_t>(out.bytes.data(), out.bytes.size());
+	w->write(bytes);
 
-		tc.source = "db 1 // comment\n"
-					"db 2 /* block */\n";
-
-		tc.tokens = {
-			tok(TokenKind::kw_db, "db"),
-			inttok("1", 1, NB::decimal),
-			tok(TokenKind::newline, "\n"),
-
-			tok(TokenKind::kw_db, "db"),
-			inttok("2", 2, NB::decimal),
-			tok(TokenKind::newline, "\n"),
-
-			tok(TokenKind::eof, ""),
-		};
-
-		tests.push_back(std::move(tc));
-	}
-
-	{
-		TestCase tc{};
-		tc.name = "c_comments_disabled";
-		tc.opt.emit_newlines = true;
-		tc.opt.case_insensitive_keywords = true;
-		tc.opt.enable_c_comments = false;
-
-		tc.source = "db 1 // not comment\n";
-
-		tc.tokens = {
-			tok(TokenKind::kw_db, "db"),
-			inttok("1", 1, NB::decimal),
-			tok(TokenKind::slash, "/"),
-			tok(TokenKind::slash, "/"),
-			tok(TokenKind::identifier, "not"),
-			tok(TokenKind::identifier, "comment"),
-			tok(TokenKind::newline, "\n"),
-			tok(TokenKind::eof, ""),
-		};
-
-		tests.push_back(std::move(tc));
-	}
-
-	{
-		TestCase tc{};
-		tc.name = "unterminated_string";
-		tc.opt.emit_newlines = true;
-		tc.opt.case_insensitive_keywords = true;
-		tc.opt.enable_c_comments = true;
-
-		tc.source = "define s, \"abc\n"
-					"end\n";
-
-		tc.tokens = {
-			tok(TokenKind::kw_define, "define"),
-			tok(TokenKind::identifier, "s"),
-			tok(TokenKind::comma, ","),
-			tok(TokenKind::string, "\"abc"),
-			tok(TokenKind::newline, "\n"),
-			tok(TokenKind::kw_end, "end"),
-			tok(TokenKind::newline, "\n"),
-			tok(TokenKind::eof, ""),
-		};
-
-		tc.errors = {
-			{"unterminated string literal"},
-		};
-
-		tests.push_back(std::move(tc));
-	}
-
-	{
-		TestCase tc{};
-		tc.name = "unterminated_block_comment";
-		tc.opt.emit_newlines = true;
-		tc.opt.case_insensitive_keywords = true;
-		tc.opt.enable_c_comments = true;
-
-		tc.source = "db 1 /* oops\n";
-
-		tc.tokens = {
-			tok(TokenKind::kw_db, "db"),
-			inttok("1", 1, NB::decimal),
-			tok(TokenKind::eof, ""),
-		};
-
-		tc.errors = {
-			{"unterminated block comment"},
-		};
-
-		tests.push_back(std::move(tc));
-	}
-
-	{
-		TestCase tc{};
-		tc.name = "crlf_newlines";
-		tc.opt.emit_newlines = true;
-		tc.opt.case_insensitive_keywords = true;
-		tc.opt.enable_c_comments = true;
-
-		tc.source = "org 0x1\r\ndb 2\r\n";
-
-		tc.tokens = {
-			tok(TokenKind::kw_org, "org"),
-			inttok("0x1", 1, NB::hexadecimal),
-			tok(TokenKind::newline, "\r\n"),
-
-			tok(TokenKind::kw_db, "db"),
-			inttok("2", 2, NB::decimal),
-			tok(TokenKind::newline, "\r\n"),
-
-			tok(TokenKind::eof, ""),
-		};
-
-		tests.push_back(std::move(tc));
-	}
-
-	bool all_ok = true;
-
-	for (auto const& tc : tests)
-	{
-		auto ok = run_one(sm, tc);
-		if (!ok)
-			all_ok = false;
-
-		std::cout << "[" << tc.name << "] " << (ok ? "ok" : "failed") << "\n";
-	}
-
-	std::cout << "\n--- summary ---\n";
-	std::cout << (all_ok ? "LEXER TESTS OK\n" : "LEXER TESTS FAILED\n");
-	return all_ok ? 0 : 1;
+	return 0;
 }
