@@ -22,6 +22,7 @@ namespace yasme::fe
 	{
 		bool allow_trailing_commas{true};
 		bool allow_empty_data_list{false};
+		std::vector<std::string> include_paths{};
 	};
 
 	struct ParserResult
@@ -35,7 +36,7 @@ namespace yasme::fe
 	class Parser
 	{
 	public:
-		Parser(SourceManager const& sources,
+		Parser(SourceManager& sources,
 			   FileId file,
 			   lex::LexerOptions lex_opt = {},
 			   ParserOptions opt = {});

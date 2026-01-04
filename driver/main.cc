@@ -24,6 +24,7 @@ namespace
 		std::size_t max_passes{100};
 		bool error_on_unresolved{true};
 		bool run_final_postpone{true};
+		std::vector<std::string> include_paths{};
 
 		yasme::ColorMode color{yasme::ColorMode::auto_detect};
 		bool show_help{};
@@ -129,6 +130,18 @@ namespace
 					return std::nullopt;
 
 				opt.max_passes = static_cast<std::size_t>(n);
+				continue;
+			}
+
+			if ((a == "-I" || a == "--include") && i + 1 < argc)
+			{
+				opt.include_paths.push_back(argv[++i]);
+				continue;
+			}
+
+			if (a.rfind("-I", 0) == 0 && a.size() > 2)
+			{
+				opt.include_paths.push_back(std::string{a.substr(2)});
 				continue;
 			}
 
@@ -246,7 +259,10 @@ int main(int argc, char** argv)
 	}
 	auto const in_id = in_id_res.value();
 
-	yasme::fe::Parser parser(sources, in_id);
+	yasme::fe::ParserOptions fe_opt{};
+	fe_opt.include_paths = opt.include_paths;
+
+	yasme::fe::Parser parser(sources, in_id, {}, fe_opt);
 	auto parse_res = parser.parse_program();
 
 	if (!parse_res.errors.empty())

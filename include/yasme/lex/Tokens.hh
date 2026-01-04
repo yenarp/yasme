@@ -27,6 +27,7 @@ namespace yasme::lex
 		kw_virtual,
 		kw_define,
 		kw_postpone,
+		kw_include,
 		kw_macro,
 		kw_local,
 		kw_match,
@@ -205,6 +206,8 @@ namespace yasme::lex
 				return "kw_define";
 			case TokenKind::kw_postpone:
 				return "kw_postpone";
+			case TokenKind::kw_include:
+				return "include";
 			case TokenKind::kw_macro:
 				return "kw_macro";
 			case TokenKind::kw_local:

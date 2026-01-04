@@ -22,6 +22,7 @@ else()
 endif()
 
 set(YASME_TEST_CASES_DIR "${CMAKE_CURRENT_SOURCE_DIR}/cases")
+set(YASME_TEST_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
 file(GLOB YASME_TEST_ASM_FILES CONFIGURE_DEPENDS
 	"${YASME_TEST_CASES_DIR}/*.asm"
@@ -53,7 +54,7 @@ foreach(asm_file IN LISTS YASME_TEST_ASM_FILES)
 
 	add_test(
 		NAME "yasme.${stem}"
-		COMMAND $<TARGET_FILE:yasme_test_runner> "${asm_file}" "${expected}"
+		COMMAND $<TARGET_FILE:yasme_test_runner> "${asm_file}" "${expected}" -I "${YASME_TEST_INCLUDE_DIR}"
 	)
 
 	set_tests_properties("yasme.${stem}" PROPERTIES

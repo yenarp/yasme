@@ -44,6 +44,8 @@ namespace yasme::lex
 			return TokenKind::kw_define;
 		if (eq("postpone"))
 			return TokenKind::kw_postpone;
+		if (eq("include"))
+			return TokenKind::kw_include;
 		if (eq("macro"))
 			return TokenKind::kw_macro;
 		if (eq("local"))

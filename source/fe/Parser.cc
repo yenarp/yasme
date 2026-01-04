@@ -1,4 +1,6 @@
 #include <cstddef>
+#include <filesystem>
+#include <unordered_map>
 #include <utility>
 #include <yasme/fe/Parser.hh>
 #include <yasme/macro/TokenBuffer.hh>
@@ -7,6 +9,205 @@
 
 namespace yasme::fe
 {
+	namespace fs = std::filesystem;
+
+	[[nodiscard]] std::string unquote_stringlike(std::string_view s)
+	{
+		if (s.size() < 2)
+			return std::string(s);
+
+		auto const q0 = s.front();
+		auto const q1 = s.back();
+		if ((q0 == '"' && q1 == '"') || (q0 == '\'' && q1 == '\''))
+			return std::string(s.substr(1, s.size() - 2));
+
+		return std::string(s);
+	}
+
+	[[nodiscard]] bool is_stringlike(lex::TokenKind k) noexcept
+	{
+		return k == lex::TokenKind::string || k == lex::TokenKind::char_literal;
+	}
+
+	struct IncludeCtx
+	{
+		SourceManager* sources{};
+		lex::LexerOptions lex_opt{};
+		ParserOptions opt{};
+		std::vector<std::string> stack{};
+		std::unordered_map<std::string, FileId> cache{};
+		std::vector<ParseError>* errors{};
+	};
+
+	[[nodiscard]] std::string normalize_path(fs::path p)
+	{
+		std::error_code ec{};
+		auto const canon = fs::weakly_canonical(p, ec);
+		if (!ec)
+			return canon.generic_string();
+		return p.lexically_normal().generic_string();
+	}
+
+	[[nodiscard]] std::optional<std::pair<FileId, std::string>>
+	open_include(IncludeCtx& ctx, FileId from_file, std::string_view raw, SourceSpan where)
+	{
+		auto from_name = std::string(ctx.sources->name(from_file));
+		fs::path from_path(from_name);
+		fs::path raw_path(std::string{raw});
+
+		std::vector<fs::path> candidates{};
+		if (raw_path.is_absolute())
+		{
+			candidates.push_back(raw_path);
+		}
+		else
+		{
+			auto parent = from_path.parent_path();
+			if (!parent.empty())
+				candidates.push_back(parent / raw_path);
+
+			for (auto const& inc : ctx.opt.include_paths)
+				candidates.push_back(fs::path(inc) / raw_path);
+
+			candidates.push_back(raw_path);
+		}
+
+		std::string last_err{};
+
+		for (auto const& cand : candidates)
+		{
+			auto key = normalize_path(cand);
+
+			if (auto it = ctx.cache.find(key); it != ctx.cache.end())
+				return std::pair<FileId, std::string>{it->second, key};
+
+			auto res = ctx.sources->open_read(cand.string());
+			if (res.ok())
+			{
+				ctx.cache.emplace(key, res.value());
+				return std::pair<FileId, std::string>{res.value(), key};
+			}
+			last_err = res.err();
+		}
+
+		ParseError e{};
+		e.span = where;
+		e.message = "cannot open include file '" + std::string(raw) + "': " + last_err;
+		ctx.errors->push_back(std::move(e));
+		return std::nullopt;
+	}
+
+	[[nodiscard]] std::vector<lex::Token>
+	expand_includes(IncludeCtx& ctx, FileId file, std::string file_key)
+	{
+		if (ctx.stack.size() > 128)
+		{
+			ParseError e{};
+			e.span = {};
+			e.message = "include nesting is too deep";
+			ctx.errors->push_back(std::move(e));
+			return {};
+		}
+
+		for (auto const& k : ctx.stack)
+		{
+			if (k == file_key)
+			{
+				ParseError e{};
+				e.span = {};
+				e.message = "recursive include of '" + file_key + "'";
+				ctx.errors->push_back(std::move(e));
+				return {};
+			}
+		}
+
+		ctx.stack.push_back(file_key);
+
+		macro::TokenBuffer buf(*ctx.sources, file, ctx.lex_opt);
+		for (auto const& le : buf.errors())
+		{
+			ParseError e{};
+			e.span = le.span;
+			e.message = le.message;
+			ctx.errors->push_back(std::move(e));
+		}
+
+		auto toks = buf.tokens();
+		std::vector<lex::Token> out{};
+		out.reserve(toks.size());
+
+		bool line_start = true;
+
+		for (std::size_t i = 0; i < toks.size(); ++i)
+		{
+			auto const& t = toks[i];
+
+			if (line_start && t.is(lex::TokenKind::kw_include))
+			{
+				auto include_span = t.span;
+
+				auto j = i + 1;
+				if (j >= toks.size() || !is_stringlike(toks[j].kind))
+				{
+					ParseError e{};
+					e.span = include_span;
+					e.message = "expected a quoted path after include";
+					ctx.errors->push_back(std::move(e));
+
+					while (j < toks.size() && !toks[j].is(lex::TokenKind::newline)
+						   && !toks[j].is(lex::TokenKind::eof))
+						++j;
+
+					if (j < toks.size() && toks[j].is(lex::TokenKind::newline))
+						out.push_back(toks[j]);
+
+					i = j;
+					line_start = true;
+					continue;
+				}
+
+				auto const& path_tok = toks[j];
+				auto raw = unquote_stringlike(path_tok.lexeme);
+
+				auto opened = open_include(ctx, file, raw, path_tok.span);
+				if (opened)
+				{
+					auto const [inc_id, inc_key] = *opened;
+					auto inc_tokens = expand_includes(ctx, inc_id, inc_key);
+
+					if (!inc_tokens.empty() && inc_tokens.back().is(lex::TokenKind::eof))
+						inc_tokens.pop_back();
+
+					out.insert(out.end(), inc_tokens.begin(), inc_tokens.end());
+				}
+
+				j += 1;
+				while (j < toks.size() && !toks[j].is(lex::TokenKind::newline)
+					   && !toks[j].is(lex::TokenKind::eof))
+				{
+					ParseError e{};
+					e.span = toks[j].span;
+					e.message = "unexpected token after include path";
+					ctx.errors->push_back(std::move(e));
+					++j;
+				}
+
+				if (j < toks.size() && toks[j].is(lex::TokenKind::newline))
+					out.push_back(toks[j]);
+
+				i = j;
+				line_start = true;
+				continue;
+			}
+
+			out.push_back(t);
+			line_start = t.is(lex::TokenKind::newline);
+		}
+
+		ctx.stack.pop_back();
+		return out;
+	}
+
 	static bool ieq(std::string_view a, std::string_view b) noexcept
 	{
 		if (a.size() != b.size())
@@ -26,21 +227,27 @@ namespace yasme::fe
 		return tok.is(lex::TokenKind::identifier) && ieq(tok.lexeme, value);
 	}
 
-	Parser::Parser(SourceManager const& sources,
+	Parser::Parser(SourceManager& sources,
 				   FileId file,
 				   lex::LexerOptions lex_opt,
 				   ParserOptions opt)
 		: m_opt(opt)
 	{
-		macro::TokenBuffer buffer(sources, file, lex_opt);
+		m_tokens = std::make_shared<std::vector<lex::Token>>();
 
-		auto owned_tokens = std::make_shared<std::vector<lex::Token>>();
-		auto span = buffer.tokens();
-		owned_tokens->assign(span.begin(), span.end());
-		m_tokens = std::move(owned_tokens);
+		IncludeCtx ctx{};
+		ctx.sources = std::addressof(sources);
+		ctx.lex_opt = lex_opt;
+		ctx.opt = opt;
+		ctx.errors = std::addressof(m_errors);
 
-		for (auto const& e : buffer.errors())
-			m_errors.push_back(ParseError{e.span, e.message});
+		auto root_name = std::string(sources.name(file));
+		auto root_key = normalize_path(fs::path(root_name));
+
+		auto flat = expand_includes(ctx, file, root_key);
+		*m_tokens = std::move(flat);
+
+		m_index = 0;
 	}
 
 	ParserResult Parser::parse_program()

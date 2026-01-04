@@ -1,4 +1,5 @@
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -331,16 +332,38 @@ namespace
 
 int main(int argc, char** argv)
 {
-	if (argc != 3)
+	if (argc < 3)
 	{
 		std::cerr << "usage: yasme_test_runner <input.asm> "
-					 "<expected.bytes|expected.hex|expected.bin|expected.err>\n";
+					 "<expected.bytes|expected.hex|expected.bin|expected.err> "
+					 "[-I <dir> | --include <dir> | -I<dir>]...\n";
 		return 2;
 	}
 
 	auto const asm_path = std::filesystem::path(argv[1]);
 	auto const expected_path = std::filesystem::path(argv[2]);
 	auto const expect_errors = expected_path.extension() == ".err";
+
+	std::vector<std::string> include_paths{};
+	for (int i = 3; i < argc; ++i)
+	{
+		auto const arg = std::string_view(argv[i]);
+
+		if ((arg == "-I" || arg == "--include") && i + 1 < argc)
+		{
+			include_paths.emplace_back(argv[++i]);
+			continue;
+		}
+
+		if (arg.size() > 2 && arg.rfind("-I", 0) == 0)
+		{
+			include_paths.emplace_back(std::string(arg.substr(2)));
+			continue;
+		}
+
+		std::cerr << "error: unknown argument: " << argv[i] << "\n";
+		return 2;
+	}
 
 	bool expected_ok = true;
 	std::vector<std::uint8_t> expected{};
@@ -372,7 +395,10 @@ int main(int argc, char** argv)
 
 	auto const in_id = in_id_res.value();
 
-	yasme::fe::Parser parser(sources, in_id);
+	yasme::fe::ParserOptions fe_opt{};
+	fe_opt.include_paths = std::move(include_paths);
+	yasme::fe::Parser parser(sources, in_id, {}, fe_opt);
+
 	auto parse_res = parser.parse_program();
 
 	if (!parse_res.errors.empty())

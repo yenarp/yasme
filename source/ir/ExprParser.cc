@@ -239,7 +239,7 @@ namespace yasme::ir
 			return make_int(t);
 		}
 
-		if (is(lex::TokenKind::string))
+		if (is(lex::TokenKind::string) || is(lex::TokenKind::char_literal))
 		{
 			auto t = consume();
 			return make_str(t);
