@@ -4,12 +4,14 @@
 #include <iostream>
 #include <optional>
 #include <span>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <vector>
 #include <yasme/Diagnostics.hh>
 #include <yasme/asm/Assembler.hh>
-#include <yasme/ir/Parser.hh>
+#include <yasme/fe/Parser.hh>
+#include <yasme/macro/Expander.hh>
 #include <yasme/support/SourceManager.hh>
 
 namespace
@@ -55,6 +57,15 @@ namespace
 			out.push_back(static_cast<std::uint8_t>(ch));
 
 		return out;
+	}
+
+	[[nodiscard]] std::string_view trim_ws(std::string_view s) noexcept
+	{
+		while (!s.empty() && (s.front() == ' ' || s.front() == '\t'))
+			s.remove_prefix(1);
+		while (!s.empty() && (s.back() == ' ' || s.back() == '\t'))
+			s.remove_suffix(1);
+		return s;
 	}
 
 	[[nodiscard]] constexpr bool is_hex_digit(char c) noexcept
@@ -245,7 +256,44 @@ namespace
 		return parse_expected_text_bytes(text, ok);
 	}
 
-	void emit_parse_errors(yasme::Diagnostics& diag, std::span<const yasme::ir::ParseError> errs)
+	[[nodiscard]] std::vector<std::string>
+	read_expected_error_lines(std::filesystem::path const& expected_path, bool& ok)
+	{
+		ok = true;
+		std::ifstream f(expected_path, std::ios::binary);
+		if (!f)
+		{
+			ok = false;
+			return {};
+		}
+
+		auto text = read_text_file(expected_path);
+		std::vector<std::string> lines{};
+
+		std::size_t pos = 0;
+		while (pos <= text.size())
+		{
+			auto end = text.find('\n', pos);
+			if (end == std::string::npos)
+				end = text.size();
+
+			auto line = std::string_view(text).substr(pos, end - pos);
+			if (!line.empty() && line.back() == '\r')
+				line.remove_suffix(1);
+
+			line = trim_ws(line);
+			if (!line.empty() && line.front() != '#')
+				lines.emplace_back(line);
+
+			if (end == text.size())
+				break;
+			pos = end + 1;
+		}
+
+		return lines;
+	}
+
+	void emit_parse_errors(yasme::Diagnostics& diag, std::span<const yasme::fe::ParseError> errs)
 	{
 		for (auto const& e : errs)
 		{
@@ -285,16 +333,24 @@ int main(int argc, char** argv)
 {
 	if (argc != 3)
 	{
-		std::cerr
-			<< "usage: yasme_test_runner <input.asm> <expected.bytes|expected.hex|expected.bin>\n";
+		std::cerr << "usage: yasme_test_runner <input.asm> "
+					 "<expected.bytes|expected.hex|expected.bin|expected.err>\n";
 		return 2;
 	}
 
 	auto const asm_path = std::filesystem::path(argv[1]);
 	auto const expected_path = std::filesystem::path(argv[2]);
+	auto const expect_errors = expected_path.extension() == ".err";
 
 	bool expected_ok = true;
-	auto expected = read_expected_bytes(expected_path, expected_ok);
+	std::vector<std::uint8_t> expected{};
+	std::vector<std::string> expected_errors{};
+
+	if (expect_errors)
+		expected_errors = read_expected_error_lines(expected_path, expected_ok);
+	else
+		expected = read_expected_bytes(expected_path, expected_ok);
+
 	if (!expected_ok)
 	{
 		std::cerr << "error: failed to read expected file: " << expected_path.string() << "\n";
@@ -302,7 +358,8 @@ int main(int argc, char** argv)
 	}
 
 	yasme::SourceManager sources{};
-	yasme::Diagnostics diag(sources, std::cerr);
+	std::ostringstream diag_out{};
+	yasme::Diagnostics diag(sources, diag_out);
 	diag.set_color_mode(yasme::ColorMode::never);
 
 	auto in_id_res = sources.open_read(asm_path.string());
@@ -315,22 +372,68 @@ int main(int argc, char** argv)
 
 	auto const in_id = in_id_res.value();
 
-	yasme::ir::Parser parser(sources, in_id);
+	yasme::fe::Parser parser(sources, in_id);
 	auto parse_res = parser.parse_program();
 
 	if (!parse_res.errors.empty())
-	{
 		emit_parse_errors(diag, parse_res.errors);
+
+	std::vector<std::uint8_t> out_bytes{};
+	bool assembled = false;
+
+	if (diag.error_count() == 0)
+	{
+		yasme::macro::Expander expander(sources, diag);
+		auto program = expander.expand(parse_res.program);
+
+		if (diag.error_count() == 0)
+		{
+			yasme::Assembler assembler(diag);
+			auto out = assembler.assemble(program);
+			assembled = true;
+			out_bytes = std::move(out.bytes);
+		}
+	}
+
+	auto const diag_text = diag_out.str();
+
+	if (expect_errors)
+	{
+		if (diag.error_count() == 0)
+		{
+			std::cerr << "expected errors but none were reported for "
+					  << asm_path.filename().string() << "\n";
+			return 1;
+		}
+
+		for (auto const& expected_line : expected_errors)
+		{
+			if (diag_text.find(expected_line) == std::string::npos)
+			{
+				std::cerr << "missing expected diagnostic: " << expected_line << "\n";
+				if (!diag_text.empty())
+					std::cerr << diag_text;
+				return 1;
+			}
+		}
+
+		return 0;
+	}
+
+	if (diag.error_count() != 0)
+	{
+		if (!diag_text.empty())
+			std::cerr << diag_text;
 		return 1;
 	}
 
-	yasme::Assembler assembler(diag);
-	auto out = assembler.assemble(parse_res.program);
-
-	if (diag.error_count() != 0 || out.errors != 0)
+	if (!assembled)
+	{
+		std::cerr << "failed to assemble " << asm_path.filename().string() << "\n";
 		return 1;
+	}
 
-	auto const got = std::span<const std::uint8_t>(out.bytes.data(), out.bytes.size());
+	auto const got = std::span<const std::uint8_t>(out_bytes.data(), out_bytes.size());
 	auto const exp = std::span<const std::uint8_t>(expected.data(), expected.size());
 
 	if (got.size() != exp.size() || !std::equal(got.begin(), got.end(), exp.begin()))

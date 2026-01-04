@@ -7,8 +7,8 @@ project(YeintsAssemblerEngine
 
 option(YASME_BUILD_STATIC "Build static library" ON)
 option(YASME_BUILD_SHARED "Build shared library" ON)
-option(YASME_BUILD_EXE    "Build executable" ON)
-option(YASME_ENABLE_LTO   "Enable LTO/IPO" ON)
+option(YASME_BUILD_EXE "Build executable" ON)
+option(YASME_ENABLE_LTO "Enable LTO/IPO" ON)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

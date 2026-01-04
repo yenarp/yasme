@@ -169,8 +169,13 @@ namespace yasme::macro
 				d.level = DiagnosticLevel::error;
 				d.message = "recursive macro expansion of '" + std::string(name) + "'";
 				d.primary = span;
-				d.labels.push_back(
-					DiagnosticLabel{"previous expansion here", frame.span, LabelKind::note});
+				for (auto const& stack_frame : m_call_stack)
+				{
+					d.labels.push_back(
+						DiagnosticLabel{"expanded from macro '" + stack_frame.name + "'",
+										stack_frame.span,
+										LabelKind::note});
+				}
 				m_diag->emit(d);
 				return false;
 			}

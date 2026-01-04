@@ -1,4 +1,3 @@
-#include <cstdint>
 #include <utility>
 #include <yasme/ir/ExprParser.hh>
 #include <yasme/ir/Parser.hh>

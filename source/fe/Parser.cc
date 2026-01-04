@@ -340,8 +340,6 @@ namespace yasme::fe
 				if (!cur().is(lex::TokenKind::newline) && !cur().is(lex::TokenKind::eof))
 				{
 					add_error(cur().span, "'tokens' parameter must be last in the signature");
-					recover_to_newline();
-					break;
 				}
 			}
 
