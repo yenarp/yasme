@@ -2,7 +2,6 @@
 #define YASME_IR_PARSER_HH
 
 #include <cstddef>
-#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -61,23 +60,8 @@ namespace yasme::ir
 		StmtPtr parse_stmt_unexpected_end();
 
 		Expr parse_expr(std::size_t min_prec = 0);
-		Expr parse_unary();
-		Expr parse_primary();
-
-		[[nodiscard]] std::optional<BinaryOp> token_to_binary_op(lex::TokenKind k) const noexcept;
-		[[nodiscard]] std::size_t precedence(BinaryOp op) const noexcept;
-		[[nodiscard]] bool is_right_associative(BinaryOp op) const noexcept;
-
-		[[nodiscard]] Expr make_ident(lex::Token const& t) const;
-		[[nodiscard]] Expr make_int(lex::Token const& t) const;
-		[[nodiscard]] Expr make_str(lex::Token const& t) const;
-		[[nodiscard]] Expr make_builtin(SourceSpan s, BuiltinKind k) const;
-		[[nodiscard]] Expr make_unary(SourceSpan s, UnaryOp op, Expr rhs) const;
-		[[nodiscard]] Expr make_binary(SourceSpan s, BinaryOp op, Expr lhs, Expr rhs) const;
 
 		static SourceSpan merge_spans(SourceSpan a, SourceSpan b) noexcept;
-
-		static std::string unquote(std::string_view s);
 
 	private:
 		lex::Lexer m_lex;
