@@ -673,6 +673,98 @@ namespace yasme::macro
 							   s.span = node.span;
 							   out.push_back(std::make_unique<ir::Stmt>(ir::Stmt(std::move(s))));
 						   },
+						   [this, env, &out](ir::StmtIf const& node) {
+							   ir::StmtIf s{};
+							   s.span = node.span;
+							   s.cond = expand_expr(node.cond, env);
+							   s.has_else = node.has_else;
+
+							   for (auto const& st2 : node.then_body)
+							   {
+								   if (!st2)
+									   continue;
+
+								   expand_normal(*st2, env, s.then_body);
+							   }
+
+							   for (auto const& st2 : node.else_body)
+							   {
+								   if (!st2)
+									   continue;
+
+								   expand_normal(*st2, env, s.else_body);
+							   }
+
+							   out.push_back(std::make_unique<ir::Stmt>(ir::Stmt(std::move(s))));
+						   },
+						   [this, env, &out](ir::StmtRepeat const& node) {
+							   ir::StmtRepeat s{};
+							   s.span = node.span;
+							   s.count = expand_expr(node.count, env);
+							   for (auto const& st2 : node.body)
+							   {
+								   if (!st2)
+									   continue;
+
+								   expand_normal(*st2, env, s.body);
+							   }
+							   out.push_back(std::make_unique<ir::Stmt>(ir::Stmt(std::move(s))));
+						   },
+						   [this, env, &out](ir::StmtWhile const& node) {
+							   ir::StmtWhile s{};
+							   s.span = node.span;
+							   s.cond = expand_expr(node.cond, env);
+							   for (auto const& st2 : node.body)
+							   {
+								   if (!st2)
+									   continue;
+
+								   expand_normal(*st2, env, s.body);
+							   }
+							   out.push_back(std::make_unique<ir::Stmt>(ir::Stmt(std::move(s))));
+						   },
+						   [this, env, &out](ir::StmtForNumeric const& node) {
+							   ir::StmtForNumeric s{};
+							   s.span = node.span;
+							   s.var = node.var;
+							   s.start = expand_expr(node.start, env);
+							   s.end = expand_expr(node.end, env);
+							   if (node.step)
+								   s.step = expand_expr(*node.step, env);
+
+							   for (auto const& st2 : node.body)
+							   {
+								   if (!st2)
+									   continue;
+
+								   expand_normal(*st2, env, s.body);
+							   }
+							   out.push_back(std::make_unique<ir::Stmt>(ir::Stmt(std::move(s))));
+						   },
+						   [this, env, &out](ir::StmtForChars const& node) {
+							   ir::StmtForChars s{};
+							   s.span = node.span;
+							   s.var = node.var;
+							   s.str = expand_expr(node.str, env);
+							   for (auto const& st2 : node.body)
+							   {
+								   if (!st2)
+									   continue;
+
+								   expand_normal(*st2, env, s.body);
+							   }
+							   out.push_back(std::make_unique<ir::Stmt>(ir::Stmt(std::move(s))));
+						   },
+						   [&out](ir::StmtBreak const& node) {
+							   ir::StmtBreak s{};
+							   s.span = node.span;
+							   out.push_back(std::make_unique<ir::Stmt>(ir::Stmt(std::move(s))));
+						   },
+						   [&out](ir::StmtContinue const& node) {
+							   ir::StmtContinue s{};
+							   s.span = node.span;
+							   out.push_back(std::make_unique<ir::Stmt>(ir::Stmt(std::move(s))));
+						   },
 						   [](auto const&) {},
 					   },
 					   st.node);

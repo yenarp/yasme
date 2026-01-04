@@ -62,6 +62,20 @@ namespace yasme::lex
 			return TokenKind::kw_store;
 		if (eq("end"))
 			return TokenKind::kw_end;
+		if (eq("if"))
+			return TokenKind::kw_if;
+		if (eq("repeat"))
+			return TokenKind::kw_repeat;
+		if (eq("while"))
+			return TokenKind::kw_while;
+		if (eq("for"))
+			return TokenKind::kw_for;
+		if (eq("in"))
+			return TokenKind::kw_in;
+		if (eq("break"))
+			return TokenKind::kw_break;
+		if (eq("continue"))
+			return TokenKind::kw_continue;
 
 		return TokenKind::identifier;
 	}

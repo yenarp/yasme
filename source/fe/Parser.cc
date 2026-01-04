@@ -397,6 +397,19 @@ namespace yasme::fe
 			return nullptr;
 		}
 
+		if (cur().is(lex::TokenKind::kw_if))
+			return parse_stmt_if(in_macro);
+		if (cur().is(lex::TokenKind::kw_repeat))
+			return parse_stmt_repeat(in_macro);
+		if (cur().is(lex::TokenKind::kw_while))
+			return parse_stmt_while(in_macro);
+		if (cur().is(lex::TokenKind::kw_for))
+			return parse_stmt_for(in_macro);
+		if (cur().is(lex::TokenKind::kw_break))
+			return parse_stmt_break();
+		if (cur().is(lex::TokenKind::kw_continue))
+			return parse_stmt_continue();
+
 		if (cur().is(lex::TokenKind::kw_macro))
 		{
 			if (in_macro)
@@ -1055,10 +1068,8 @@ namespace yasme::fe
 
 		if (cur().is(lex::TokenKind::kw_end) && next().is(lex::TokenKind::kw_virtual))
 		{
-			auto end_kw = consume();
-			auto which = consume();
-			(void)end_kw;
-			(void)which;
+			consume();
+			consume();
 		}
 
 		StmtVirtual s{};
@@ -1067,6 +1078,347 @@ namespace yasme::fe
 		s.body = std::move(body);
 
 		return std::make_unique<Stmt>(Stmt(std::move(s)));
+	}
+
+	StmtPtr Parser::parse_stmt_if(bool in_macro)
+	{
+		auto kw = consume();
+
+		auto cond = parse_expr();
+		skip_newlines();
+
+		std::vector<StmtPtr> then_body{};
+		std::vector<StmtPtr> else_body{};
+		bool has_else = false;
+
+		for (;;)
+		{
+			skip_newlines();
+
+			if (cur().is(lex::TokenKind::kw_else))
+				break;
+			if (cur().is(lex::TokenKind::kw_end) && next().is(lex::TokenKind::kw_if))
+				break;
+
+			if (cur().is(lex::TokenKind::eof))
+			{
+				add_error(cur().span, "unexpected end of file in 'if' block");
+				break;
+			}
+
+			auto st = parse_stmt(in_macro);
+			if (st)
+				then_body.push_back(std::move(st));
+			else
+				recover_to_newline();
+		}
+
+		if (cur().is(lex::TokenKind::kw_else))
+		{
+			consume();
+			has_else = true;
+			skip_newlines();
+
+			for (;;)
+			{
+				skip_newlines();
+
+				if (cur().is(lex::TokenKind::kw_end) && next().is(lex::TokenKind::kw_if))
+					break;
+
+				if (cur().is(lex::TokenKind::eof))
+				{
+					add_error(cur().span, "unexpected end of file in 'if' block");
+					break;
+				}
+
+				auto st = parse_stmt(in_macro);
+				if (st)
+					else_body.push_back(std::move(st));
+				else
+					recover_to_newline();
+			}
+		}
+
+		if (cur().is(lex::TokenKind::kw_end) && next().is(lex::TokenKind::kw_if))
+		{
+			consume();
+			consume();
+		}
+
+		ir::StmtIf s{};
+		s.span = kw.span;
+		s.cond = std::move(cond);
+
+		for (auto& st : then_body)
+		{
+			if (auto* n = std::get_if<StmtNormal>(&st->node))
+				s.then_body.push_back(std::move(n->stmt));
+			else
+				add_error(st->node.index() == 0 ? kw.span : kw.span,
+						  "unsupported statement kind inside 'if' (internal)");
+		}
+
+		for (auto& st : else_body)
+		{
+			if (auto* n = std::get_if<StmtNormal>(&st->node))
+				s.else_body.push_back(std::move(n->stmt));
+			else
+				add_error(st->node.index() == 0 ? kw.span : kw.span,
+						  "unsupported statement kind inside 'else' (internal)");
+		}
+
+		s.has_else = has_else;
+
+		return std::make_unique<Stmt>(
+			Stmt(StmtNormal{std::make_unique<ir::Stmt>(ir::Stmt(std::move(s)))}));
+	}
+
+	StmtPtr Parser::parse_stmt_repeat(bool in_macro)
+	{
+		auto kw = consume();
+		auto count = parse_expr();
+		skip_newlines();
+
+		std::vector<StmtPtr> body{};
+		for (;;)
+		{
+			skip_newlines();
+
+			if (cur().is(lex::TokenKind::kw_end) && next().is(lex::TokenKind::kw_repeat))
+				break;
+
+			if (cur().is(lex::TokenKind::eof))
+			{
+				add_error(cur().span, "unexpected end of file in 'repeat' block");
+				break;
+			}
+
+			auto st = parse_stmt(in_macro);
+			if (st)
+				body.push_back(std::move(st));
+			else
+				recover_to_newline();
+		}
+
+		if (cur().is(lex::TokenKind::kw_end) && next().is(lex::TokenKind::kw_repeat))
+		{
+			consume();
+			consume();
+		}
+
+		ir::StmtRepeat s{};
+		s.span = kw.span;
+		s.count = std::move(count);
+
+		for (auto& st : body)
+		{
+			if (auto* n = std::get_if<StmtNormal>(&st->node))
+				s.body.push_back(std::move(n->stmt));
+			else
+				add_error(kw.span, "unsupported statement kind inside 'repeat' (internal)");
+		}
+
+		return std::make_unique<Stmt>(
+			Stmt(StmtNormal{std::make_unique<ir::Stmt>(ir::Stmt(std::move(s)))}));
+	}
+
+	StmtPtr Parser::parse_stmt_while(bool in_macro)
+	{
+		auto kw = consume();
+		auto cond = parse_expr();
+		skip_newlines();
+
+		std::vector<StmtPtr> body{};
+		for (;;)
+		{
+			skip_newlines();
+
+			if (cur().is(lex::TokenKind::kw_end) && next().is(lex::TokenKind::kw_while))
+				break;
+
+			if (cur().is(lex::TokenKind::eof))
+			{
+				add_error(cur().span, "unexpected end of file in 'while' block");
+				break;
+			}
+
+			auto st = parse_stmt(in_macro);
+			if (st)
+				body.push_back(std::move(st));
+			else
+				recover_to_newline();
+		}
+
+		if (cur().is(lex::TokenKind::kw_end) && next().is(lex::TokenKind::kw_while))
+		{
+			consume();
+			consume();
+		}
+
+		ir::StmtWhile s{};
+		s.span = kw.span;
+		s.cond = std::move(cond);
+
+		for (auto& st : body)
+		{
+			if (auto* n = std::get_if<StmtNormal>(&st->node))
+				s.body.push_back(std::move(n->stmt));
+			else
+				add_error(kw.span, "unsupported statement kind inside 'while' (internal)");
+		}
+
+		return std::make_unique<Stmt>(
+			Stmt(StmtNormal{std::make_unique<ir::Stmt>(ir::Stmt(std::move(s)))}));
+	}
+
+	StmtPtr Parser::parse_stmt_for(bool in_macro)
+	{
+		auto kw = consume();
+
+		if (!cur().is(lex::TokenKind::identifier))
+		{
+			add_error(cur().span, "expected loop variable after 'for'");
+			recover_to_newline();
+			return nullptr;
+		}
+
+		auto var_tok = consume();
+		std::string var = std::string(var_tok.lexeme);
+
+		if (accept(lex::TokenKind::kw_in))
+		{
+			auto str = parse_expr();
+			skip_newlines();
+
+			std::vector<StmtPtr> body{};
+			for (;;)
+			{
+				skip_newlines();
+
+				if (cur().is(lex::TokenKind::kw_end) && next().is(lex::TokenKind::kw_for))
+					break;
+
+				if (cur().is(lex::TokenKind::eof))
+				{
+					add_error(cur().span, "unexpected end of file in 'for' block");
+					break;
+				}
+
+				auto st = parse_stmt(in_macro);
+				if (st)
+					body.push_back(std::move(st));
+				else
+					recover_to_newline();
+			}
+
+			if (cur().is(lex::TokenKind::kw_end) && next().is(lex::TokenKind::kw_for))
+			{
+				consume();
+				consume();
+			}
+
+			ir::StmtForChars s{};
+			s.span = kw.span;
+			s.var = std::move(var);
+			s.str = std::move(str);
+
+			for (auto& st : body)
+			{
+				if (auto* n = std::get_if<StmtNormal>(&st->node))
+					s.body.push_back(std::move(n->stmt));
+				else
+					add_error(kw.span, "unsupported statement kind inside 'for' (internal)");
+			}
+
+			return std::make_unique<Stmt>(
+				Stmt(StmtNormal{std::make_unique<ir::Stmt>(ir::Stmt(std::move(s)))}));
+		}
+
+		if (!accept(lex::TokenKind::eq))
+		{
+			add_error(cur().span, "expected '=' or 'in' after loop variable");
+			recover_to_newline();
+			return nullptr;
+		}
+
+		auto start = parse_expr();
+		if (!expect(lex::TokenKind::comma, "expected ',' after for start expression"))
+		{
+			recover_to_newline();
+			return nullptr;
+		}
+
+		auto end = parse_expr();
+
+		std::optional<ir::Expr> step{};
+		if (accept(lex::TokenKind::comma))
+			step = parse_expr();
+
+		skip_newlines();
+
+		std::vector<StmtPtr> body{};
+		for (;;)
+		{
+			skip_newlines();
+
+			if (cur().is(lex::TokenKind::kw_end) && next().is(lex::TokenKind::kw_for))
+				break;
+
+			if (cur().is(lex::TokenKind::eof))
+			{
+				add_error(cur().span, "unexpected end of file in 'for' block");
+				break;
+			}
+
+			auto st = parse_stmt(in_macro);
+			if (st)
+				body.push_back(std::move(st));
+			else
+				recover_to_newline();
+		}
+
+		if (cur().is(lex::TokenKind::kw_end) && next().is(lex::TokenKind::kw_for))
+		{
+			consume();
+			consume();
+		}
+
+		ir::StmtForNumeric s{};
+		s.span = kw.span;
+		s.var = std::move(var);
+		s.start = std::move(start);
+		s.end = std::move(end);
+		s.step = std::move(step);
+
+		for (auto& st : body)
+		{
+			if (auto* n = std::get_if<StmtNormal>(&st->node))
+				s.body.push_back(std::move(n->stmt));
+			else
+				add_error(kw.span, "unsupported statement kind inside 'for' (internal)");
+		}
+
+		return std::make_unique<Stmt>(
+			Stmt(StmtNormal{std::make_unique<ir::Stmt>(ir::Stmt(std::move(s)))}));
+	}
+
+	StmtPtr Parser::parse_stmt_break()
+	{
+		auto kw = consume();
+		ir::StmtBreak s{};
+		s.span = kw.span;
+		return std::make_unique<Stmt>(
+			Stmt(StmtNormal{std::make_unique<ir::Stmt>(ir::Stmt(std::move(s)))}));
+	}
+
+	StmtPtr Parser::parse_stmt_continue()
+	{
+		auto kw = consume();
+		ir::StmtContinue s{};
+		s.span = kw.span;
+		return std::make_unique<Stmt>(
+			Stmt(StmtNormal{std::make_unique<ir::Stmt>(ir::Stmt(std::move(s)))}));
 	}
 
 	StmtPtr Parser::parse_stmt_postpone(bool in_macro)
@@ -1103,10 +1455,8 @@ namespace yasme::fe
 
 		if (cur().is(lex::TokenKind::kw_end) && next().is(lex::TokenKind::kw_postpone))
 		{
-			auto end_kw = consume();
-			auto which = consume();
-			(void)end_kw;
-			(void)which;
+			consume();
+			consume();
 		}
 
 		StmtPostpone s{};

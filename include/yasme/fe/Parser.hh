@@ -71,6 +71,12 @@ namespace yasme::fe
 		StmtPtr parse_stmt_load();
 		StmtPtr parse_stmt_virtual(bool in_macro);
 		StmtPtr parse_stmt_postpone(bool in_macro);
+		StmtPtr parse_stmt_if(bool in_macro);
+		StmtPtr parse_stmt_repeat(bool in_macro);
+		StmtPtr parse_stmt_while(bool in_macro);
+		StmtPtr parse_stmt_for(bool in_macro);
+		StmtPtr parse_stmt_break();
+		StmtPtr parse_stmt_continue();
 		StmtPtr parse_stmt_unexpected_end();
 
 		ir::Expr parse_expr(std::size_t min_prec = 0);

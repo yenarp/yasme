@@ -123,11 +123,63 @@ namespace yasme::ir
 	struct Stmt;
 
 	using StmtPtr = std::unique_ptr<Stmt>;
+	using StmtList = std::vector<StmtPtr>;
 
 	struct StmtOrg
 	{
 		SourceSpan span{};
 		Expr address{};
+	};
+
+	struct StmtIf
+	{
+		SourceSpan span{};
+		Expr cond{};
+		StmtList then_body{};
+		StmtList else_body{};
+		bool has_else{};
+	};
+
+	struct StmtRepeat
+	{
+		SourceSpan span{};
+		Expr count{};
+		StmtList body{};
+	};
+
+	struct StmtWhile
+	{
+		SourceSpan span{};
+		Expr cond{};
+		StmtList body{};
+	};
+
+	struct StmtForNumeric
+	{
+		SourceSpan span{};
+		std::string var{};
+		Expr start{};
+		Expr end{};
+		std::optional<Expr> step{};
+		StmtList body{};
+	};
+
+	struct StmtForChars
+	{
+		SourceSpan span{};
+		std::string var{};
+		Expr str{};
+		StmtList body{};
+	};
+
+	struct StmtBreak
+	{
+		SourceSpan span{};
+	};
+
+	struct StmtContinue
+	{
+		SourceSpan span{};
 	};
 
 	struct StmtLabel
@@ -195,6 +247,13 @@ namespace yasme::ir
 								  StmtLoad,
 								  StmtVirtual,
 								  StmtPostpone,
+								  StmtIf,
+								  StmtRepeat,
+								  StmtWhile,
+								  StmtForNumeric,
+								  StmtForChars,
+								  StmtBreak,
+								  StmtContinue,
 								  StmtEnd>;
 
 		Node node{};

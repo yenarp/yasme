@@ -1,0 +1,5 @@
+db 0x01
+repeat 3
+  db 0x7f
+end repeat
+db 0x02

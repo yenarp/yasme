@@ -1,3 +1,4 @@
+#include <limits>
 #include <utility>
 #include <yasme/ir/ExprParser.hh>
 #include <yasme/ir/Parser.hh>
@@ -113,6 +114,19 @@ namespace yasme::ir
 			skip_newlines();
 			return nullptr;
 		}
+
+		if (is(lex::TokenKind::kw_if))
+			return parse_stmt_if();
+		if (is(lex::TokenKind::kw_repeat))
+			return parse_stmt_repeat();
+		if (is(lex::TokenKind::kw_while))
+			return parse_stmt_while();
+		if (is(lex::TokenKind::kw_for))
+			return parse_stmt_for();
+		if (is(lex::TokenKind::kw_break))
+			return parse_stmt_break();
+		if (is(lex::TokenKind::kw_continue))
+			return parse_stmt_continue();
 
 		if (is(lex::TokenKind::kw_org))
 			return parse_stmt_org();
@@ -369,10 +383,8 @@ namespace yasme::ir
 
 		if (is(lex::TokenKind::kw_end) && is_next(lex::TokenKind::kw_virtual))
 		{
-			auto end_kw = consume();
-			auto which = consume();
-			(void)end_kw;
-			(void)which;
+			consume();
+			consume();
 		}
 
 		auto s = StmtVirtual{};
@@ -417,10 +429,8 @@ namespace yasme::ir
 
 		if (is(lex::TokenKind::kw_end) && is_next(lex::TokenKind::kw_postpone))
 		{
-			auto end_kw = consume();
-			auto which = consume();
-			(void)end_kw;
-			(void)which;
+			consume();
+			consume();
 		}
 
 		auto s = StmtPostpone{};
@@ -428,6 +438,292 @@ namespace yasme::ir
 		s.mode = mode;
 		s.body = std::move(body);
 
+		return std::make_unique<Stmt>(Stmt(std::move(s)));
+	}
+
+	StmtPtr Parser::parse_stmt_if()
+	{
+		auto kw = consume();
+
+		auto cond = parse_expr();
+		skip_newlines();
+
+		std::vector<StmtPtr> then_body{};
+		std::vector<StmtPtr> else_body{};
+		bool has_else = false;
+
+		for (;;)
+		{
+			skip_newlines();
+
+			if (is(lex::TokenKind::kw_else))
+				break;
+			if (is(lex::TokenKind::kw_end) && is_next(lex::TokenKind::kw_if))
+				break;
+
+			if (is(lex::TokenKind::eof))
+			{
+				add_error(cur().span, "unexpected end of file in 'if' block");
+				break;
+			}
+
+			auto st = parse_stmt();
+			if (st)
+				then_body.push_back(std::move(st));
+			else
+				recover_to_newline();
+		}
+
+		if (is(lex::TokenKind::kw_else))
+		{
+			consume();
+			has_else = true;
+			skip_newlines();
+
+			for (;;)
+			{
+				skip_newlines();
+
+				if (is(lex::TokenKind::kw_end) && is_next(lex::TokenKind::kw_if))
+					break;
+
+				if (is(lex::TokenKind::eof))
+				{
+					add_error(cur().span, "unexpected end of file in 'if' block");
+					break;
+				}
+
+				auto st = parse_stmt();
+				if (st)
+					else_body.push_back(std::move(st));
+				else
+					recover_to_newline();
+			}
+		}
+
+		if (is(lex::TokenKind::kw_end) && is_next(lex::TokenKind::kw_if))
+		{
+			consume();
+			consume();
+		}
+
+		StmtIf s{};
+		s.span = kw.span;
+		s.cond = std::move(cond);
+		s.then_body = std::move(then_body);
+		s.else_body = std::move(else_body);
+		s.has_else = has_else;
+		return std::make_unique<Stmt>(Stmt(std::move(s)));
+	}
+
+	StmtPtr Parser::parse_stmt_repeat()
+	{
+		auto kw = consume();
+
+		auto count = parse_expr();
+		skip_newlines();
+
+		std::vector<StmtPtr> body{};
+		for (;;)
+		{
+			skip_newlines();
+
+			if (is(lex::TokenKind::kw_end) && is_next(lex::TokenKind::kw_repeat))
+				break;
+
+			if (is(lex::TokenKind::eof))
+			{
+				add_error(cur().span, "unexpected end of file in 'repeat' block");
+				break;
+			}
+
+			auto st = parse_stmt();
+			if (st)
+				body.push_back(std::move(st));
+			else
+				recover_to_newline();
+		}
+
+		if (is(lex::TokenKind::kw_end) && is_next(lex::TokenKind::kw_repeat))
+		{
+			consume();
+			consume();
+		}
+
+		StmtRepeat s{};
+		s.span = kw.span;
+		s.count = std::move(count);
+		s.body = std::move(body);
+		return std::make_unique<Stmt>(Stmt(std::move(s)));
+	}
+
+	StmtPtr Parser::parse_stmt_while()
+	{
+		auto kw = consume();
+
+		auto cond = parse_expr();
+		skip_newlines();
+
+		std::vector<StmtPtr> body{};
+		for (;;)
+		{
+			skip_newlines();
+
+			if (is(lex::TokenKind::kw_end) && is_next(lex::TokenKind::kw_while))
+				break;
+
+			if (is(lex::TokenKind::eof))
+			{
+				add_error(cur().span, "unexpected end of file in 'while' block");
+				break;
+			}
+
+			auto st = parse_stmt();
+			if (st)
+				body.push_back(std::move(st));
+			else
+				recover_to_newline();
+		}
+
+		if (is(lex::TokenKind::kw_end) && is_next(lex::TokenKind::kw_while))
+		{
+			consume();
+			consume();
+		}
+
+		StmtWhile s{};
+		s.span = kw.span;
+		s.cond = std::move(cond);
+		s.body = std::move(body);
+		return std::make_unique<Stmt>(Stmt(std::move(s)));
+	}
+
+	StmtPtr Parser::parse_stmt_for()
+	{
+		auto kw = consume();
+
+		if (!is(lex::TokenKind::identifier))
+		{
+			add_error(cur().span, "expected loop variable after 'for'");
+			recover_to_newline();
+			return nullptr;
+		}
+
+		auto var_tok = consume();
+		std::string var = std::string(var_tok.lexeme);
+
+		if (accept(lex::TokenKind::kw_in))
+		{
+			auto str = parse_expr();
+			skip_newlines();
+
+			std::vector<StmtPtr> body{};
+			for (;;)
+			{
+				skip_newlines();
+
+				if (is(lex::TokenKind::kw_end) && is_next(lex::TokenKind::kw_for))
+					break;
+
+				if (is(lex::TokenKind::eof))
+				{
+					add_error(cur().span, "unexpected end of file in 'for' block");
+					break;
+				}
+
+				auto st = parse_stmt();
+				if (st)
+					body.push_back(std::move(st));
+				else
+					recover_to_newline();
+			}
+
+			if (is(lex::TokenKind::kw_end) && is_next(lex::TokenKind::kw_for))
+			{
+				consume();
+				consume();
+			}
+
+			StmtForChars s{};
+			s.span = kw.span;
+			s.var = std::move(var);
+			s.str = std::move(str);
+			s.body = std::move(body);
+			return std::make_unique<Stmt>(Stmt(std::move(s)));
+		}
+
+		if (!accept(lex::TokenKind::eq))
+		{
+			add_error(cur().span, "expected '=' or 'in' after loop variable");
+			recover_to_newline();
+			return nullptr;
+		}
+
+		auto start = parse_expr();
+		if (!expect(lex::TokenKind::comma, "expected ',' after for start expression"))
+		{
+			recover_to_newline();
+			return nullptr;
+		}
+
+		auto end = parse_expr();
+
+		std::optional<Expr> step{};
+		if (accept(lex::TokenKind::comma))
+			step = parse_expr();
+
+		skip_newlines();
+
+		std::vector<StmtPtr> body{};
+		for (;;)
+		{
+			skip_newlines();
+
+			if (is(lex::TokenKind::kw_end) && is_next(lex::TokenKind::kw_for))
+				break;
+
+			if (is(lex::TokenKind::eof))
+			{
+				add_error(cur().span, "unexpected end of file in 'for' block");
+				break;
+			}
+
+			auto st = parse_stmt();
+			if (st)
+				body.push_back(std::move(st));
+			else
+				recover_to_newline();
+		}
+
+		if (is(lex::TokenKind::kw_end) && is_next(lex::TokenKind::kw_for))
+		{
+			consume();
+			consume();
+		}
+
+		StmtForNumeric s{};
+		s.span = kw.span;
+		s.var = std::move(var);
+		s.start = std::move(start);
+		s.end = std::move(end);
+		s.step = std::move(step);
+		s.body = std::move(body);
+		return std::make_unique<Stmt>(Stmt(std::move(s)));
+	}
+
+	StmtPtr Parser::parse_stmt_break()
+	{
+		auto kw = consume();
+		StmtBreak s{};
+		s.span = kw.span;
+		return std::make_unique<Stmt>(Stmt(std::move(s)));
+	}
+
+	StmtPtr Parser::parse_stmt_continue()
+	{
+		auto kw = consume();
+		StmtContinue s{};
+		s.span = kw.span;
 		return std::make_unique<Stmt>(Stmt(std::move(s)));
 	}
 

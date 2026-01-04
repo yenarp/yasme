@@ -115,6 +115,22 @@ namespace yasme
 	private:
 		[[nodiscard]] PassState run_pass(ir::Program const& program, PassState const& seed);
 
+		struct Flow
+		{
+			enum class Kind
+			{
+				none,
+				break_,
+				continue_,
+			};
+
+			Kind kind{Kind::none};
+			SourceSpan span{};
+		};
+
+		[[nodiscard]] Flow walk_stmt_cf(PassState& st, ir::Stmt const& stmt);
+		[[nodiscard]] Flow walk_block_cf(PassState& st, std::vector<ir::StmtPtr> const& body);
+
 		void walk_stmt(PassState& st, ir::Stmt const& stmt);
 		void walk_block(PassState& st, std::vector<ir::StmtPtr> const& body);
 
@@ -129,6 +145,12 @@ namespace yasme
 		void apply_load(PassState& st, ir::StmtLoad const& s);
 		void apply_virtual(PassState& st, ir::StmtVirtual const& s);
 		void apply_postpone(PassState& st, ir::StmtPostpone const& s);
+
+		[[nodiscard]] Flow apply_if(PassState& st, ir::StmtIf const& s);
+		[[nodiscard]] Flow apply_repeat(PassState& st, ir::StmtRepeat const& s);
+		[[nodiscard]] Flow apply_while(PassState& st, ir::StmtWhile const& s);
+		[[nodiscard]] Flow apply_for_numeric(PassState& st, ir::StmtForNumeric const& s);
+		[[nodiscard]] Flow apply_for_chars(PassState& st, ir::StmtForChars const& s);
 
 		[[nodiscard]] Value eval_value(PassState& st, ir::Expr const& e);
 		[[nodiscard]] std::optional<std::string> eval_name(PassState& st, ir::Expr const& e);

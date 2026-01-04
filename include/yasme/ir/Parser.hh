@@ -58,6 +58,12 @@ namespace yasme::ir
 		StmtPtr parse_stmt_load();
 		StmtPtr parse_stmt_virtual();
 		StmtPtr parse_stmt_postpone();
+		StmtPtr parse_stmt_if();
+		StmtPtr parse_stmt_repeat();
+		StmtPtr parse_stmt_while();
+		StmtPtr parse_stmt_for();
+		StmtPtr parse_stmt_break();
+		StmtPtr parse_stmt_continue();
 		StmtPtr parse_stmt_unexpected_end();
 
 		Expr parse_expr(std::size_t min_prec = 0);

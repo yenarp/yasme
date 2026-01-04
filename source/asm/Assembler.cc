@@ -177,31 +177,89 @@ namespace yasme
 		return st;
 	}
 
-	void Assembler::walk_stmt(PassState& st, ir::Stmt const& stmt)
+	Assembler::Flow Assembler::walk_stmt_cf(PassState& st, ir::Stmt const& stmt)
 	{
-		std::visit(Overload{
-					   [&](ir::StmtOrg const& s) { apply_org(st, s); },
-					   [&](ir::StmtLabel const& s) { apply_label(st, s); },
-					   [&](ir::StmtAssign const& s) { apply_assign(st, s); },
-					   [&](ir::StmtDefine const& s) { apply_define(st, s); },
-					   [&](ir::StmtEmitData const& s) { apply_emit_data(st, s); },
-					   [&](ir::StmtLoad const& s) { apply_load(st, s); },
-					   [&](ir::StmtVirtual const& s) { apply_virtual(st, s); },
-					   [&](ir::StmtPostpone const& s) { apply_postpone(st, s); },
-					   [&](ir::StmtEnd const&) {},
-				   },
-				   stmt.node);
+		return std::visit(
+			Overload{
+				[&](ir::StmtOrg const& s) -> Flow {
+					apply_org(st, s);
+					return {};
+				},
+				[&](ir::StmtLabel const& s) -> Flow {
+					apply_label(st, s);
+					return {};
+				},
+				[&](ir::StmtAssign const& s) -> Flow {
+					apply_assign(st, s);
+					return {};
+				},
+				[&](ir::StmtDefine const& s) -> Flow {
+					apply_define(st, s);
+					return {};
+				},
+				[&](ir::StmtEmitData const& s) -> Flow {
+					apply_emit_data(st, s);
+					return {};
+				},
+				[&](ir::StmtLoad const& s) -> Flow {
+					apply_load(st, s);
+					return {};
+				},
+				[&](ir::StmtVirtual const& s) -> Flow {
+					apply_virtual(st, s);
+					return {};
+				},
+				[&](ir::StmtPostpone const& s) -> Flow {
+					apply_postpone(st, s);
+					return {};
+				},
+				[&](ir::StmtIf const& s) -> Flow { return apply_if(st, s); },
+				[&](ir::StmtRepeat const& s) -> Flow { return apply_repeat(st, s); },
+				[&](ir::StmtWhile const& s) -> Flow { return apply_while(st, s); },
+				[&](ir::StmtForNumeric const& s) -> Flow { return apply_for_numeric(st, s); },
+				[&](ir::StmtForChars const& s) -> Flow { return apply_for_chars(st, s); },
+				[&](ir::StmtBreak const& s) -> Flow {
+					Flow f{};
+					f.kind = Flow::Kind::break_;
+					f.span = s.span;
+					return f;
+				},
+				[&](ir::StmtContinue const& s) -> Flow {
+					Flow f{};
+					f.kind = Flow::Kind::continue_;
+					f.span = s.span;
+					return f;
+				},
+				[&](ir::StmtEnd const&) -> Flow { return {}; },
+			},
+			stmt.node);
 	}
 
-	void Assembler::walk_block(PassState& st, std::vector<ir::StmtPtr> const& body)
+	Assembler::Flow Assembler::walk_block_cf(PassState& st, std::vector<ir::StmtPtr> const& body)
 	{
 		for (auto const& sp : body)
 		{
 			if (!sp)
 				continue;
-
-			walk_stmt(st, *sp);
+			auto f = walk_stmt_cf(st, *sp);
+			if (f.kind != Flow::Kind::none)
+				return f;
 		}
+		return {};
+	}
+
+	void Assembler::walk_stmt(PassState& st, ir::Stmt const& stmt)
+	{
+		auto f = walk_stmt_cf(st, stmt);
+		if (f.kind != Flow::Kind::none)
+			error(st, f.span, "break/continue used outside of a loop");
+	}
+
+	void Assembler::walk_block(PassState& st, std::vector<ir::StmtPtr> const& body)
+	{
+		auto f = walk_block_cf(st, body);
+		if (f.kind != Flow::Kind::none)
+			error(st, f.span, "break/continue used outside of a loop");
 	}
 
 	void Assembler::run_postpone_each_pass(PassState& st)
@@ -212,7 +270,9 @@ namespace yasme
 			if (!p)
 				continue;
 
-			walk_block(st, p->body);
+			auto f = walk_block_cf(st, p->body);
+			if (f.kind != Flow::Kind::none)
+				error(st, f.span, "break/continue used outside of a loop");
 		}
 	}
 
@@ -224,7 +284,9 @@ namespace yasme
 			if (!p)
 				continue;
 
-			walk_block(st, p->body);
+			auto f = walk_block_cf(st, p->body);
+			if (f.kind != Flow::Kind::none)
+				error(st, f.span, "break/continue used outside of a loop");
 		}
 	}
 
@@ -634,7 +696,9 @@ namespace yasme
 		st.current_stream = name;
 		st.dollar_address = it->second.origin + it->second.bytes.size();
 
-		walk_block(st, s.body);
+		auto f = walk_block_cf(st, s.body);
+		if (f.kind != Flow::Kind::none)
+			error(st, f.span, "break/continue used outside of a loop");
 
 		st.current_stream = old_stream;
 		st.dollar_address = cur_stream(st).origin + cur_stream(st).bytes.size();
@@ -646,6 +710,348 @@ namespace yasme
 			st.postpone_each_pass.push_back(std::addressof(s));
 		else
 			st.postpone_after_stable.push_back(std::addressof(s));
+	}
+
+	static std::optional<std::int64_t> add_i64_checked(std::int64_t a, std::int64_t b) noexcept
+	{
+		__int128 v = static_cast<__int128>(a) + static_cast<__int128>(b);
+		if (v < static_cast<__int128>(std::numeric_limits<std::int64_t>::min()))
+			return std::nullopt;
+		if (v > static_cast<__int128>(std::numeric_limits<std::int64_t>::max()))
+			return std::nullopt;
+		return static_cast<std::int64_t>(v);
+	}
+
+	Assembler::Flow Assembler::apply_if(PassState& st, ir::StmtIf const& s)
+	{
+		auto v = eval_value(st, s.cond);
+		if (is_unknown(v))
+		{
+			if (g_error_unresolved)
+				error(st, s.cond.span, "if condition expects a resolved numeric expression");
+			return {};
+		}
+
+		if (!is_int(v))
+		{
+			error(st, s.cond.span, "if condition expects a numeric expression");
+			return {};
+		}
+
+		auto const cond = std::get<std::int64_t>(v);
+
+		if (cond != 0)
+			return walk_block_cf(st, s.then_body);
+
+		if (s.has_else)
+			return walk_block_cf(st, s.else_body);
+
+		return {};
+	}
+
+	Assembler::Flow Assembler::apply_repeat(PassState& st, ir::StmtRepeat const& s)
+	{
+		auto v = eval_value(st, s.count);
+		if (is_unknown(v))
+		{
+			if (g_error_unresolved)
+				error(st, s.count.span, "repeat count expects a resolved numeric expression");
+			return {};
+		}
+
+		if (!is_int(v))
+		{
+			error(st, s.count.span, "repeat count expects a numeric expression");
+			return {};
+		}
+
+		auto const count = std::get<std::int64_t>(v);
+		if (count < 0)
+		{
+			error(st, s.count.span, "repeat count must be non-negative");
+			return {};
+		}
+
+		std::size_t limit = 1000000;
+		if (static_cast<std::uint64_t>(count) > limit)
+		{
+			error(st, s.count.span, "repeat iteration count is too large");
+			return {};
+		}
+
+		for (std::int64_t i = 0; i < count; ++i)
+		{
+			auto f = walk_block_cf(st, s.body);
+			if (f.kind == Flow::Kind::break_)
+				return {};
+			if (f.kind == Flow::Kind::continue_)
+				continue;
+			if (f.kind != Flow::Kind::none)
+				return f;
+		}
+		return {};
+	}
+
+	Assembler::Flow Assembler::apply_for_numeric(PassState& st, ir::StmtForNumeric const& s)
+	{
+		auto v_start = eval_value(st, s.start);
+		auto v_end = eval_value(st, s.end);
+
+		if (is_unknown(v_start) || is_unknown(v_end))
+		{
+			if (g_error_unresolved)
+				error(st, s.span, "for bounds must be resolved in this pass");
+			return {};
+		}
+
+		if (!is_int(v_start) || !is_int(v_end))
+		{
+			error(st, s.span, "for bounds must be numeric");
+			return {};
+		}
+
+		auto const start = std::get<std::int64_t>(v_start);
+		auto const end = std::get<std::int64_t>(v_end);
+
+		std::int64_t step = 0;
+		if (s.step)
+		{
+			auto v_step = eval_value(st, *s.step);
+			if (is_unknown(v_step))
+			{
+				if (g_error_unresolved)
+					error(st, s.span, "for step must be resolved in this pass");
+				return {};
+			}
+			if (!is_int(v_step))
+			{
+				error(st, s.span, "for step must be numeric");
+				return {};
+			}
+			step = std::get<std::int64_t>(v_step);
+		}
+		else
+			step = (start <= end) ? 1 : -1;
+
+		if (step == 0)
+		{
+			error(st, s.span, "for step must be non-zero");
+			return {};
+		}
+
+		struct Restore
+		{
+			bool had{};
+			Symbol sym{};
+		};
+
+		Restore restore{};
+		auto it_old = st.symbols.find(s.var);
+		if (it_old != st.symbols.end())
+		{
+			restore.had = true;
+			restore.sym = it_old->second;
+		}
+
+		auto set_var = [&](std::int64_t v) {
+			Symbol sym{};
+			sym.kind = SymbolKind::numeric;
+			sym.value = v;
+			sym.declared_at = s.span;
+			st.symbols[s.var] = std::move(sym);
+		};
+
+		std::size_t iters = 0;
+		std::size_t limit = 1000000;
+
+		auto should_continue = [&](std::int64_t cur) -> bool {
+			if (step > 0)
+				return cur <= end;
+			return cur >= end;
+		};
+
+		for (std::int64_t cur = start; should_continue(cur);)
+		{
+			if (iters++ >= limit)
+			{
+				error(st, s.span, "for loop exceeded iteration limit");
+				break;
+			}
+
+			set_var(cur);
+
+			auto f = walk_block_cf(st, s.body);
+			if (f.kind == Flow::Kind::break_)
+				break;
+			if (f.kind == Flow::Kind::continue_)
+			{
+				auto next = add_i64_checked(cur, step);
+				if (!next)
+				{
+					error(st, s.span, "for loop induction variable overflow");
+					break;
+				}
+				cur = *next;
+				continue;
+			}
+			if (f.kind != Flow::Kind::none)
+			{
+				if (restore.had)
+					st.symbols[s.var] = std::move(restore.sym);
+				else
+					st.symbols.erase(s.var);
+				return f;
+			}
+
+			auto next = add_i64_checked(cur, step);
+			if (!next)
+			{
+				error(st, s.span, "for loop induction variable overflow");
+				break;
+			}
+			cur = *next;
+		}
+
+		if (restore.had)
+			st.symbols[s.var] = std::move(restore.sym);
+		else
+			st.symbols.erase(s.var);
+
+		return {};
+	}
+
+	Assembler::Flow Assembler::apply_for_chars(PassState& st, ir::StmtForChars const& s)
+	{
+		auto v = eval_value(st, s.str);
+		if (is_unknown(v))
+		{
+			if (g_error_unresolved)
+				error(st, s.str.span, "for-in expects a resolved string expression");
+			return {};
+		}
+
+		if (!is_str(v))
+		{
+			error(st, s.str.span, "for-in expects a string expression");
+			return {};
+		}
+
+		auto const& str = std::get<std::string>(v);
+
+		struct Restore
+		{
+			bool had{};
+			Symbol sym{};
+		};
+
+		Restore restore{};
+		auto it_old = st.symbols.find(s.var);
+		if (it_old != st.symbols.end())
+		{
+			restore.had = true;
+			restore.sym = it_old->second;
+		}
+
+		auto set_var = [&](char c) {
+			Symbol sym{};
+			sym.kind = SymbolKind::string;
+			sym.value = std::string(1, c);
+			sym.declared_at = s.span;
+			st.symbols[s.var] = std::move(sym);
+		};
+
+		std::size_t iters = 0;
+		std::size_t limit = 1000000;
+
+		for (char c : str)
+		{
+			if (iters++ >= limit)
+			{
+				error(st, s.span, "for loop exceeded iteration limit");
+				break;
+			}
+
+			set_var(c);
+
+			auto f = walk_block_cf(st, s.body);
+			if (f.kind == Flow::Kind::break_)
+				break;
+			if (f.kind == Flow::Kind::continue_)
+				continue;
+			if (f.kind != Flow::Kind::none)
+			{
+				if (restore.had)
+					st.symbols[s.var] = std::move(restore.sym);
+				else
+					st.symbols.erase(s.var);
+				return f;
+			}
+		}
+
+		if (restore.had)
+			st.symbols[s.var] = std::move(restore.sym);
+		else
+			st.symbols.erase(s.var);
+
+		return {};
+	}
+
+	Assembler::Flow Assembler::apply_while(PassState& st, ir::StmtWhile const& s)
+	{
+		auto init = eval_value(st, s.cond);
+		if (is_unknown(init))
+		{
+			if (g_error_unresolved)
+				error(st, s.cond.span, "while condition expects a resolved numeric expression");
+			return {};
+		}
+
+		if (!is_int(init))
+		{
+			error(st, s.cond.span, "while condition expects a numeric expression");
+			return {};
+		}
+
+		PassState tmp = st;
+
+		std::size_t iters = 0;
+		std::size_t limit = 1000000;
+
+		for (;;)
+		{
+			auto v = eval_value(tmp, s.cond);
+			if (is_unknown(v))
+			{
+				if (g_error_unresolved)
+					error(st, s.cond.span, "while condition is unresolved in this pass");
+				return {};
+			}
+			if (!is_int(v))
+			{
+				error(st, s.cond.span, "while condition expects a numeric expression");
+				return {};
+			}
+
+			if (std::get<std::int64_t>(v) == 0)
+				break;
+
+			if (iters++ >= limit)
+			{
+				error(st, s.span, "while loop exceeded iteration limit");
+				return {};
+			}
+
+			auto f = walk_block_cf(tmp, s.body);
+			if (f.kind == Flow::Kind::break_)
+				break;
+			if (f.kind == Flow::Kind::continue_)
+				continue;
+			if (f.kind != Flow::Kind::none)
+				return f;
+		}
+
+		st = std::move(tmp);
+		return {};
 	}
 
 	Assembler::Value Assembler::eval_builtin(PassState& st, ir::ExprBuiltin const& b)

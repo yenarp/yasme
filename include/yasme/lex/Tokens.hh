@@ -31,6 +31,13 @@ namespace yasme::lex
 		kw_macro,
 		kw_local,
 		kw_match,
+		kw_if,
+		kw_repeat,
+		kw_while,
+		kw_for,
+		kw_in,
+		kw_break,
+		kw_continue,
 		kw_else,
 		kw_eval,
 		kw_load,
@@ -129,6 +136,13 @@ namespace yasme::lex
 			case TokenKind::kw_macro:
 			case TokenKind::kw_local:
 			case TokenKind::kw_match:
+			case TokenKind::kw_if:
+			case TokenKind::kw_repeat:
+			case TokenKind::kw_while:
+			case TokenKind::kw_for:
+			case TokenKind::kw_in:
+			case TokenKind::kw_break:
+			case TokenKind::kw_continue:
 			case TokenKind::kw_else:
 			case TokenKind::kw_eval:
 			case TokenKind::kw_load:
@@ -207,7 +221,7 @@ namespace yasme::lex
 			case TokenKind::kw_postpone:
 				return "kw_postpone";
 			case TokenKind::kw_include:
-				return "include";
+				return "kw_include";
 			case TokenKind::kw_macro:
 				return "kw_macro";
 			case TokenKind::kw_local:
@@ -224,6 +238,20 @@ namespace yasme::lex
 				return "kw_store";
 			case TokenKind::kw_end:
 				return "kw_end";
+			case TokenKind::kw_if:
+				return "kw_if";
+			case TokenKind::kw_repeat:
+				return "kw_repeat";
+			case TokenKind::kw_while:
+				return "kw_while";
+			case TokenKind::kw_for:
+				return "kw_for";
+			case TokenKind::kw_in:
+				return "kw_in";
+			case TokenKind::kw_break:
+				return "kw_break";
+			case TokenKind::kw_continue:
+				return "kw_continue";
 
 			case TokenKind::lparen:
 				return "lparen";
