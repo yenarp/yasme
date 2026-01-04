@@ -62,3 +62,31 @@ add_custom_target(check
 	COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
 	DEPENDS yasme_test_runner
 )
+
+add_executable(yasme_pattern_tests
+	PatternTests.cc
+)
+
+target_compile_features(yasme_pattern_tests PRIVATE cxx_std_23)
+
+if(MSVC)
+	target_compile_options(yasme_pattern_tests PRIVATE /W4 /permissive-)
+else()
+	target_compile_options(yasme_pattern_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+endif()
+
+if(TARGET yasme)
+	target_link_libraries(yasme_pattern_tests PRIVATE yasme)
+elseif(TARGET yasme_static)
+	target_link_libraries(yasme_pattern_tests PRIVATE yasme_static)
+else()
+	target_sources(yasme_pattern_tests PRIVATE $<TARGET_OBJECTS:yasme_obj>)
+	target_include_directories(yasme_pattern_tests PRIVATE
+		$<TARGET_PROPERTY:yasme_obj,INTERFACE_INCLUDE_DIRECTORIES>
+	)
+endif()
+
+add_test(
+	NAME "yasme.patterns"
+	COMMAND yasme_pattern_tests
+)

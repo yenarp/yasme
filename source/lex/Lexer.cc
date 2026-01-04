@@ -528,6 +528,12 @@ namespace yasme::lex
 			if (is_ascii_digit(c))
 				return lex_integer(begin);
 
+			if (c == '.' && peek_char() == '.' && peek_char(2) == '.')
+			{
+				advance(3);
+				return make(TokenKind::ellipsis, begin, m_off);
+			}
+
 			if (c == '.' && is_ident_start(peek_char()))
 				return lex_identifier(begin);
 
