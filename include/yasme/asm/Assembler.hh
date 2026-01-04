@@ -126,6 +126,7 @@ namespace yasme
 		void apply_assign(PassState& st, ir::StmtAssign const& s);
 		void apply_define(PassState& st, ir::StmtDefine const& s);
 		void apply_emit_data(PassState& st, ir::StmtEmitData const& s);
+		void apply_load(PassState& st, ir::StmtLoad const& s);
 		void apply_virtual(PassState& st, ir::StmtVirtual const& s);
 		void apply_postpone(PassState& st, ir::StmtPostpone const& s);
 

@@ -185,6 +185,7 @@ namespace yasme
 					   [&](ir::StmtAssign const& s) { apply_assign(st, s); },
 					   [&](ir::StmtDefine const& s) { apply_define(st, s); },
 					   [&](ir::StmtEmitData const& s) { apply_emit_data(st, s); },
+					   [&](ir::StmtLoad const& s) { apply_load(st, s); },
 					   [&](ir::StmtVirtual const& s) { apply_virtual(st, s); },
 					   [&](ir::StmtPostpone const& s) { apply_postpone(st, s); },
 					   [&](ir::StmtEnd const&) {},
@@ -489,6 +490,123 @@ namespace yasme
 					break;
 			}
 		}
+	}
+
+	void Assembler::apply_load(PassState& st, ir::StmtLoad const& s)
+	{
+		if (!ir::is_valid_identifier(s.dest))
+		{
+			error(st, s.span, "invalid identifier in load destination");
+			return;
+		}
+
+		auto it = st.symbols.find(s.dest);
+		if (it != st.symbols.end()
+			&& (it->second.kind == SymbolKind::define_numeric
+				|| it->second.kind == SymbolKind::define_string))
+		{
+			error(st, s.span, "cannot assign to a define");
+			return;
+		}
+
+		auto set_unknown = [&]() {
+			Symbol sym{};
+			sym.kind = SymbolKind::numeric;
+			sym.value = Unknown{};
+			sym.declared_at = s.span;
+			st.symbols[s.dest] = std::move(sym);
+		};
+
+		std::optional<std::string> stream_name{};
+		if (auto const* lit = std::get_if<ir::ExprStr>(&s.stream.node))
+			stream_name = lit->value;
+		else
+			stream_name = eval_name(st, s.stream);
+
+		if (!stream_name)
+		{
+			if (g_error_unresolved)
+				error(st, s.stream.span, "load stream must resolve to an identifier or string");
+			set_unknown();
+			return;
+		}
+
+		auto stream_it = st.streams.find(*stream_name);
+		if (stream_it == st.streams.end())
+		{
+			error(st, s.stream.span, "unknown stream '" + *stream_name + "'");
+			return;
+		}
+
+		auto offset_v = eval_value(st, s.offset);
+		if (is_unknown(offset_v))
+		{
+			if (g_error_unresolved)
+				error(st, s.offset.span, "load offset expects a resolved numeric expression");
+			set_unknown();
+			return;
+		}
+
+		if (!is_int(offset_v))
+		{
+			error(st, s.offset.span, "load offset expects a numeric expression");
+			set_unknown();
+			return;
+		}
+
+		auto const offset_i = std::get<std::int64_t>(offset_v);
+		if (offset_i < 0)
+		{
+			error(st, s.offset.span, "load offset must be non-negative");
+			set_unknown();
+			return;
+		}
+
+		std::size_t width = 1;
+		switch (s.unit)
+		{
+			case ir::DataUnit::u8:
+				width = 1;
+				break;
+			case ir::DataUnit::u16:
+				width = 2;
+				break;
+			case ir::DataUnit::u32:
+				width = 4;
+				break;
+			case ir::DataUnit::u64:
+				width = 8;
+				break;
+		}
+
+		auto const off = static_cast<std::uint64_t>(offset_i);
+		auto const end = off + static_cast<std::uint64_t>(width);
+		if (end > stream_it->second.bytes.size())
+		{
+			error(st, s.span, "load offset is out of bounds for stream");
+			return;
+		}
+
+		std::uint64_t value = 0;
+		for (std::size_t i = 0; i < width; ++i)
+		{
+			auto byte = stream_it->second.bytes[static_cast<std::size_t>(off + i)];
+			value |= static_cast<std::uint64_t>(byte) << (8 * i);
+		}
+
+		auto const as_i64 = to_i64(value);
+		if (!as_i64)
+		{
+			error(st, s.span, "load value does not fit in signed 64-bit");
+			set_unknown();
+			return;
+		}
+
+		Symbol sym{};
+		sym.kind = SymbolKind::numeric;
+		sym.value = *as_i64;
+		sym.declared_at = s.span;
+		st.symbols[s.dest] = std::move(sym);
 	}
 
 	void Assembler::apply_virtual(PassState& st, ir::StmtVirtual const& s)

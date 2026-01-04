@@ -124,6 +124,9 @@ namespace yasme::ir
 		if (is(lex::TokenKind::kw_define))
 			return parse_stmt_define();
 
+		if (is(lex::TokenKind::kw_load))
+			return parse_stmt_load();
+
 		if (is(lex::TokenKind::kw_db) || is(lex::TokenKind::kw_dw) || is(lex::TokenKind::kw_dd)
 			|| is(lex::TokenKind::kw_dq))
 		{
@@ -269,6 +272,65 @@ namespace yasme::ir
 		s.span = kw.span;
 		s.unit = unit;
 		s.items = std::move(items);
+
+		return std::make_unique<Stmt>(Stmt(std::move(s)));
+	}
+
+	StmtPtr Parser::parse_stmt_load()
+	{
+		auto kw = consume();
+
+		if (!(is(lex::TokenKind::kw_db) || is(lex::TokenKind::kw_dw) || is(lex::TokenKind::kw_dd)
+			  || is(lex::TokenKind::kw_dq)))
+		{
+			add_error(cur().span, "expected data unit after 'load'");
+			return nullptr;
+		}
+
+		auto unit_tok = consume();
+		DataUnit unit = DataUnit::u8;
+		switch (unit_tok.kind)
+		{
+			case lex::TokenKind::kw_db:
+				unit = DataUnit::u8;
+				break;
+			case lex::TokenKind::kw_dw:
+				unit = DataUnit::u16;
+				break;
+			case lex::TokenKind::kw_dd:
+				unit = DataUnit::u32;
+				break;
+			case lex::TokenKind::kw_dq:
+				unit = DataUnit::u64;
+				break;
+			default:
+				break;
+		}
+
+		if (!is(lex::TokenKind::identifier))
+		{
+			add_error(cur().span, "expected destination identifier after load unit");
+			return nullptr;
+		}
+
+		auto dest_tok = consume();
+
+		if (!expect(lex::TokenKind::comma, "expected ',' after load destination"))
+			return nullptr;
+
+		auto stream = parse_expr();
+
+		if (!expect(lex::TokenKind::comma, "expected ',' after load stream"))
+			return nullptr;
+
+		auto offset = parse_expr();
+
+		StmtLoad s{};
+		s.span = merge_spans(kw.span, offset.span);
+		s.unit = unit;
+		s.dest = std::string(dest_tok.lexeme);
+		s.stream = std::move(stream);
+		s.offset = std::move(offset);
 
 		return std::make_unique<Stmt>(Stmt(std::move(s)));
 	}

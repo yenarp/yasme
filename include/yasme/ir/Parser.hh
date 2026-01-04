@@ -55,6 +55,7 @@ namespace yasme::ir
 		StmtPtr parse_stmt_label_or_assign();
 		StmtPtr parse_stmt_define();
 		StmtPtr parse_stmt_emit_data(lex::TokenKind directive);
+		StmtPtr parse_stmt_load();
 		StmtPtr parse_stmt_virtual();
 		StmtPtr parse_stmt_postpone();
 		StmtPtr parse_stmt_unexpected_end();

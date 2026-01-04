@@ -642,6 +642,27 @@ namespace yasme::macro
 								   s.items.push_back(expand_expr(item, env));
 							   out.push_back(std::make_unique<ir::Stmt>(ir::Stmt(std::move(s))));
 						   },
+						   [this, env, &out](ir::StmtLoad const& node) {
+							   ir::StmtLoad s{};
+							   s.span = node.span;
+							   s.unit = node.unit;
+
+							   std::string name = node.dest;
+							   if (env && env->refs.contains(node.dest))
+							   {
+								   auto it_ref = env->values.find(node.dest);
+								   auto ref = (it_ref != env->values.end())
+												  ? std::get_if<MacroValueRef>(&it_ref->second)
+												  : nullptr;
+								   if (ref)
+									   name = ref->name;
+							   }
+
+							   s.dest = std::move(name);
+							   s.stream = expand_expr(node.stream, env);
+							   s.offset = expand_expr(node.offset, env);
+							   out.push_back(std::make_unique<ir::Stmt>(ir::Stmt(std::move(s))));
+						   },
 						   [&out](ir::StmtEnd const& node) {
 							   ir::StmtEnd s{};
 							   s.span = node.span;

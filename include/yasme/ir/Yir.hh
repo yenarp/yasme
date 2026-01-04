@@ -157,6 +157,15 @@ namespace yasme::ir
 		std::vector<Expr> items{};
 	};
 
+	struct StmtLoad
+	{
+		SourceSpan span{};
+		DataUnit unit{};
+		std::string dest{};
+		Expr stream{};
+		Expr offset{};
+	};
+
 	struct StmtVirtual
 	{
 		SourceSpan span{};
@@ -183,6 +192,7 @@ namespace yasme::ir
 								  StmtAssign,
 								  StmtDefine,
 								  StmtEmitData,
+								  StmtLoad,
 								  StmtVirtual,
 								  StmtPostpone,
 								  StmtEnd>;
