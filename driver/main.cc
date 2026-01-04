@@ -10,7 +10,8 @@
 #include <vector>
 #include <yasme/Diagnostics.hh>
 #include <yasme/asm/Assembler.hh>
-#include <yasme/ir/Parser.hh>
+#include <yasme/fe/Parser.hh>
+#include <yasme/macro/Expander.hh>
 #include <yasme/support/SourceManager.hh>
 
 namespace
@@ -182,7 +183,7 @@ namespace
 		return opt;
 	}
 
-	void emit_parse_errors(yasme::Diagnostics& diag, std::span<const yasme::ir::ParseError> errs)
+	void emit_parse_errors(yasme::Diagnostics& diag, std::span<const yasme::fe::ParseError> errs)
 	{
 		for (auto const& e : errs)
 		{
@@ -245,7 +246,7 @@ int main(int argc, char** argv)
 	}
 	auto const in_id = in_id_res.value();
 
-	yasme::ir::Parser parser(sources, in_id);
+	yasme::fe::Parser parser(sources, in_id);
 	auto parse_res = parser.parse_program();
 
 	if (!parse_res.errors.empty())
@@ -254,6 +255,12 @@ int main(int argc, char** argv)
 		return 1;
 	}
 
+	yasme::macro::Expander expander(sources, diag);
+	auto ir_program = expander.expand(parse_res.program);
+
+	if (diag.error_count() != 0)
+		return 1;
+
 	yasme::Assembler assembler(diag);
 
 	yasme::AssembleOptions asm_opt{};
@@ -261,7 +268,7 @@ int main(int argc, char** argv)
 	asm_opt.error_on_unresolved = opt.error_on_unresolved;
 	asm_opt.run_final_postpone = opt.run_final_postpone;
 
-	auto out = assembler.assemble(parse_res.program, asm_opt);
+	auto out = assembler.assemble(ir_program, asm_opt);
 
 	if (diag.error_count() != 0 || out.errors != 0)
 		return 1;
