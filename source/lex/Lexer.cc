@@ -44,6 +44,20 @@ namespace yasme::lex
 			return TokenKind::kw_define;
 		if (eq("postpone"))
 			return TokenKind::kw_postpone;
+		if (eq("macro"))
+			return TokenKind::kw_macro;
+		if (eq("local"))
+			return TokenKind::kw_local;
+		if (eq("match"))
+			return TokenKind::kw_match;
+		if (eq("else"))
+			return TokenKind::kw_else;
+		if (eq("eval"))
+			return TokenKind::kw_eval;
+		if (eq("load"))
+			return TokenKind::kw_load;
+		if (eq("store"))
+			return TokenKind::kw_store;
 		if (eq("end"))
 			return TokenKind::kw_end;
 
@@ -550,6 +564,11 @@ namespace yasme::lex
 					advance();
 					return make(TokenKind::colon, begin, m_off);
 				case '.':
+					if (n == '.' && peek_char(2) == '.')
+					{
+						advance(3);
+						return make(TokenKind::ellipsis, begin, m_off);
+					}
 					advance();
 					return make(TokenKind::dot, begin, m_off);
 

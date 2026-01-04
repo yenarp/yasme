@@ -27,6 +27,13 @@ namespace yasme::lex
 		kw_virtual,
 		kw_define,
 		kw_postpone,
+		kw_macro,
+		kw_local,
+		kw_match,
+		kw_else,
+		kw_eval,
+		kw_load,
+		kw_store,
 		kw_end,
 
 		lparen,
@@ -39,6 +46,7 @@ namespace yasme::lex
 		comma,
 		colon,
 		dot,
+		ellipsis,
 
 		at,
 		dollar,
@@ -117,6 +125,13 @@ namespace yasme::lex
 			case TokenKind::kw_virtual:
 			case TokenKind::kw_define:
 			case TokenKind::kw_postpone:
+			case TokenKind::kw_macro:
+			case TokenKind::kw_local:
+			case TokenKind::kw_match:
+			case TokenKind::kw_else:
+			case TokenKind::kw_eval:
+			case TokenKind::kw_load:
+			case TokenKind::kw_store:
 			case TokenKind::kw_end:
 				return true;
 			default:
@@ -190,6 +205,20 @@ namespace yasme::lex
 				return "kw_define";
 			case TokenKind::kw_postpone:
 				return "kw_postpone";
+			case TokenKind::kw_macro:
+				return "kw_macro";
+			case TokenKind::kw_local:
+				return "kw_local";
+			case TokenKind::kw_match:
+				return "kw_match";
+			case TokenKind::kw_else:
+				return "kw_else";
+			case TokenKind::kw_eval:
+				return "kw_eval";
+			case TokenKind::kw_load:
+				return "kw_load";
+			case TokenKind::kw_store:
+				return "kw_store";
 			case TokenKind::kw_end:
 				return "kw_end";
 
@@ -212,6 +241,8 @@ namespace yasme::lex
 				return "colon";
 			case TokenKind::dot:
 				return "dot";
+			case TokenKind::ellipsis:
+				return "ellipsis";
 
 			case TokenKind::at:
 				return "at";
