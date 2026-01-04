@@ -1,0 +1,9 @@
+virtual s
+  db 0x01, 0x02, 0x03, 0x04
+end virtual
+
+load dd x, s, 0
+db x & 0xff
+db (x >> 8) & 0xff
+db (x >> 16) & 0xff
+db (x >> 24) & 0xff

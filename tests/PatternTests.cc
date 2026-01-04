@@ -71,6 +71,34 @@ int main()
 	failures += !check(expect_match("foo ... bar", "foo bar"), "ellipsis matches empty");
 
 	{
+		struct MatchCase
+		{
+			std::string_view pattern{};
+			std::string_view input{};
+			bool expect{};
+			std::string_view label{};
+		};
+
+		auto const cases = std::vector<MatchCase>{
+			{"foo + 1", "foo + 1", true, "table: literal match"},
+			{"foo + 1", "foo + 2", false, "table: literal mismatch"},
+			{"_ + _", "a + b", true, "table: wildcard match"},
+			{"... + {b}", "1 + 2", true, "table: ellipsis then bind"},
+			{"{a} ... {b}", "1 2", true, "table: binds around ellipsis"},
+			{"{a} ... {b}", "1", false, "table: bind needs at least one token"},
+		};
+
+		for (auto const& c : cases)
+		{
+			auto ok = expect_match(c.pattern, c.input);
+			if (c.expect)
+				failures += !check(ok, c.label);
+			else
+				failures += !check(!ok, c.label);
+		}
+	}
+
+	{
 		yasme::SourceManager sources{};
 		auto pattern_view = lex_slice(sources, "pattern", "{lhs} + {rhs}");
 		auto input_view = lex_slice(sources, "input", "1 + 2");
@@ -106,6 +134,29 @@ int main()
 		auto pattern_view = lex_slice(sources, "pattern", "{lhs + rhs");
 		auto parsed = yasme::macro::parse_pattern(pattern_view.slice);
 		failures += !check(!parsed.ok(), "invalid binding reports parse error");
+	}
+
+	{
+		struct ParseCase
+		{
+			std::string_view pattern{};
+			std::string_view label{};
+		};
+
+		auto const cases = std::vector<ParseCase>{
+			{"{a", "table: missing closing brace"},
+			{"{1}", "table: non-identifier binding name"},
+			{"}", "table: stray right brace"},
+			{"{...}", "table: ellipsis in binding"},
+		};
+
+		for (auto const& c : cases)
+		{
+			yasme::SourceManager sources{};
+			auto view = lex_slice(sources, "pattern", c.pattern);
+			auto parsed = yasme::macro::parse_pattern(view.slice);
+			failures += !check(!parsed.ok(), c.label);
+		}
 	}
 
 	failures += !check(!expect_match("_", ""), "wildcard does not match empty");

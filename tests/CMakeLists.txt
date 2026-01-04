@@ -53,7 +53,7 @@ foreach(asm_file IN LISTS YASME_TEST_ASM_FILES)
 
 	add_test(
 		NAME "yasme.${stem}"
-		COMMAND yasme_test_runner "${asm_file}" "${expected}"
+		COMMAND $<TARGET_FILE:yasme_test_runner> "${asm_file}" "${expected}"
 	)
 
 	set_tests_properties("yasme.${stem}" PROPERTIES
@@ -63,7 +63,7 @@ endforeach()
 
 add_custom_target(check
 	COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
-	DEPENDS yasme_test_runner
+	DEPENDS yasme_test_runner yasme_pattern_tests
 )
 
 add_executable(yasme_pattern_tests
@@ -91,5 +91,5 @@ endif()
 
 add_test(
 	NAME "yasme.patterns"
-	COMMAND yasme_pattern_tests
+	COMMAND $<TARGET_FILE:yasme_pattern_tests>
 )
