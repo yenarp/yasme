@@ -5,6 +5,7 @@
 #include <string_view>
 #include <utility>
 #include <yasme/asm/Assembler.hh>
+#include <yasme/ir/Parser.hh>
 
 namespace yasme
 {
@@ -18,6 +19,27 @@ namespace yasme
 
 		thread_local bool g_emit_diagnostics = false;
 		thread_local bool g_error_unresolved = false;
+
+		void emit_ir_parse_errors(Diagnostics& diag, std::span<const ir::ParseError> errs)
+		{
+			for (auto const& e : errs)
+			{
+				Diagnostic d{};
+				d.level = DiagnosticLevel::error;
+				d.message = e.message;
+				d.primary = e.span;
+				diag.emit(d);
+			}
+		}
+
+		bool ensure_newline(std::string& s)
+		{
+			if (!s.empty() && s.back() == '\n')
+				return true;
+
+			s.push_back('\n');
+			return true;
+		}
 
 		[[nodiscard]] std::uint64_t fnv1a_bytes(std::span<const std::uint8_t> bytes) noexcept
 		{
@@ -79,9 +101,59 @@ namespace yasme
 	{
 	}
 
+	Assembler::Assembler(SourceManager& sources, Diagnostics& diag) noexcept
+		: m_diag(std::addressof(diag)), m_sources(std::addressof(sources))
+	{
+	}
+
 	AssembleOutput Assembler::assemble(ir::Program const& program, AssembleOptions opt)
 	{
 		auto const err_before = m_diag->error_count();
+
+		ir::Program prefix{};
+		if (!opt.inline_lines.empty())
+		{
+			if (m_sources == nullptr)
+			{
+				Diagnostic d{};
+				d.level = DiagnosticLevel::error;
+				d.message =
+					"internal: inline assembly requested but assembler has no SourceManager";
+				m_diag->emit(d);
+			}
+			else
+			{
+				for (std::size_t i = 0; i < opt.inline_lines.size(); ++i)
+				{
+					std::string src = opt.inline_lines[i];
+					ensure_newline(src);
+
+					auto name = std::string("<inline:") + std::to_string(i) + ">";
+					auto id = m_sources->add_virtual(std::move(name), std::move(src));
+
+					ir::Parser parser(*m_sources, id);
+					auto res = parser.parse_program();
+					if (!res.errors.empty())
+					{
+						emit_ir_parse_errors(*m_diag, res.errors);
+						break;
+					}
+
+					for (auto& st : res.program.stmts)
+						prefix.stmts.push_back(std::move(st));
+				}
+			}
+		}
+
+		if (m_diag->error_count() != err_before)
+		{
+			AssembleOutput out{};
+			out.passes = 0;
+			out.errors = m_diag->error_count() - err_before;
+			return out;
+		}
+
+		auto* prefix_ptr = prefix.stmts.empty() ? nullptr : std::addressof(prefix);
 
 		PassState last{};
 		std::size_t last_fp{};
@@ -97,7 +169,7 @@ namespace yasme
 			g_emit_diagnostics = false;
 			g_error_unresolved = false;
 
-			auto cur = run_pass(program, seed);
+			auto cur = run_pass(program, seed, prefix_ptr);
 			auto const fp = fingerprint(cur);
 
 			if (have_last && fp == last_fp)
@@ -118,7 +190,7 @@ namespace yasme
 		g_emit_diagnostics = true;
 		g_error_unresolved = opt.error_on_unresolved;
 
-		auto final_state = run_pass(program, final_seed);
+		auto final_state = run_pass(program, final_seed, prefix_ptr);
 		auto const fp_final = fingerprint(final_state);
 
 		if (!stable && have_last && fp_final == last_fp)
@@ -130,13 +202,24 @@ namespace yasme
 		if (!stable && opt.max_passes > 0)
 		{
 			SourceSpan anchor{};
-			if (!program.stmts.empty() && program.stmts.front())
-			{
+			auto const pick_anchor = [&](ir::Program const& p) {
+				if (p.stmts.empty() || !p.stmts.front())
+					return false;
+
 				std::visit(
 					Overload{
 						[&](auto const& s) { anchor = s.span; },
 					},
-					program.stmts.front()->node);
+					p.stmts.front()->node);
+				return true;
+			};
+
+			if (prefix_ptr != nullptr)
+				pick_anchor(*prefix_ptr);
+
+			if (anchor.id == FileId{})
+			{
+				pick_anchor(program);
 			}
 			error(
 				final_state, anchor, "assembly did not stabilize within the configured pass limit");
@@ -156,7 +239,9 @@ namespace yasme
 		return out;
 	}
 
-	Assembler::PassState Assembler::run_pass(ir::Program const& program, PassState const& seed)
+	Assembler::PassState Assembler::run_pass(ir::Program const& program,
+											 PassState const& seed,
+											 ir::Program const* prefix)
 	{
 		PassState st = seed;
 
@@ -166,12 +251,19 @@ namespace yasme
 		st.current_stream = "output";
 		st.dollar_address = cur_stream(st).origin + cur_stream(st).bytes.size();
 
-		for (auto const& sp : program.stmts)
-		{
-			if (!sp)
-				continue;
-			walk_stmt(st, *sp);
-		}
+		auto walk_prog = [&](ir::Program const& p) {
+			for (auto const& sp : p.stmts)
+			{
+				if (!sp)
+					continue;
+				walk_stmt(st, *sp);
+			}
+		};
+
+		if (prefix != nullptr)
+			walk_prog(*prefix);
+
+		walk_prog(program);
 
 		run_postpone_each_pass(st);
 		return st;

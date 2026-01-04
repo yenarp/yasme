@@ -20,6 +20,7 @@ namespace yasme
 		std::size_t max_passes{100};
 		bool error_on_unresolved{true};
 		bool run_final_postpone{true};
+		std::vector<std::string> inline_lines{};
 	};
 
 	struct AssembleOutput
@@ -33,6 +34,7 @@ namespace yasme
 	{
 	public:
 		explicit Assembler(Diagnostics& diag) noexcept;
+		Assembler(SourceManager& sources, Diagnostics& diag) noexcept;
 
 		AssembleOutput assemble(ir::Program const& program, AssembleOptions opt = {});
 
@@ -113,7 +115,8 @@ namespace yasme
 		void error(PassState& st, SourceSpan span, std::string msg);
 
 	private:
-		[[nodiscard]] PassState run_pass(ir::Program const& program, PassState const& seed);
+		[[nodiscard]] PassState
+		run_pass(ir::Program const& program, PassState const& seed, ir::Program const* prefix);
 
 		struct Flow
 		{
@@ -167,6 +170,7 @@ namespace yasme
 		[[nodiscard]] static std::size_t fingerprint(PassState const& st);
 
 		Diagnostics* m_diag{};
+		SourceManager* m_sources{};
 	};
 
 } // namespace yasme

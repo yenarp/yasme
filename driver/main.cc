@@ -21,6 +21,8 @@ namespace
 		std::string input{};
 		std::string output{};
 
+		std::vector<std::string> inline_lines{};
+
 		std::size_t max_passes{100};
 		bool error_on_unresolved{true};
 		bool run_final_postpone{true};
@@ -44,6 +46,7 @@ namespace
 		os << "usage: " << exe << " [options] <input>\n\n"
 		   << "options:\n"
 		   << "  -o, --output <file>        output file\n"
+		   << "  -i <line>                  inline assembly statement before input (repeatable)\n"
 		   << "      --max-passes <n>       maximum assembly passes\n"
 		   << "      --no-error-unresolved  do not error on unresolved symbols in final pass\n"
 		   << "      --no-final-postpone    do not run 'postpone !' finalization blocks\n"
@@ -130,6 +133,16 @@ namespace
 					return std::nullopt;
 
 				opt.max_passes = static_cast<std::size_t>(n);
+				continue;
+			}
+
+			if (a == "-i")
+			{
+				auto v = take_value(i, argc, argv);
+				if (!v)
+					return std::nullopt;
+
+				opt.inline_lines.push_back(std::string(*v));
 				continue;
 			}
 
@@ -277,12 +290,13 @@ int main(int argc, char** argv)
 	if (diag.error_count() != 0)
 		return 1;
 
-	yasme::Assembler assembler(diag);
+	yasme::Assembler assembler(sources, diag);
 
 	yasme::AssembleOptions asm_opt{};
 	asm_opt.max_passes = opt.max_passes;
 	asm_opt.error_on_unresolved = opt.error_on_unresolved;
 	asm_opt.run_final_postpone = opt.run_final_postpone;
+	asm_opt.inline_lines = opt.inline_lines;
 
 	auto out = assembler.assemble(ir_program, asm_opt);
 

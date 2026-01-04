@@ -1,4 +1,3 @@
-// yasme/lex/lexer.hh
 #ifndef YASME_LEX_LEXER_HH
 #define YASME_LEX_LEXER_HH
 

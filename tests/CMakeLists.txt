@@ -64,7 +64,7 @@ endforeach()
 
 add_custom_target(check
 	COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
-	DEPENDS yasme_test_runner yasme_pattern_tests
+	DEPENDS yasme_test_runner yasme_pattern_tests yasme_inline_tests
 )
 
 add_executable(yasme_pattern_tests
@@ -93,4 +93,32 @@ endif()
 add_test(
 	NAME "yasme.patterns"
 	COMMAND $<TARGET_FILE:yasme_pattern_tests>
+)
+
+add_executable(yasme_inline_tests
+	InlineTests.cc
+)
+
+target_compile_features(yasme_inline_tests PRIVATE cxx_std_23)
+
+if(MSVC)
+	target_compile_options(yasme_inline_tests PRIVATE /W4 /permissive-)
+else()
+	target_compile_options(yasme_inline_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+endif()
+
+if(TARGET yasme)
+	target_link_libraries(yasme_inline_tests PRIVATE yasme)
+elseif(TARGET yasme_static)
+	target_link_libraries(yasme_inline_tests PRIVATE yasme_static)
+else()
+	target_sources(yasme_inline_tests PRIVATE $<TARGET_OBJECTS:yasme_obj>)
+	target_include_directories(yasme_inline_tests PRIVATE
+		$<TARGET_PROPERTY:yasme_obj,INTERFACE_INCLUDE_DIRECTORIES>
+	)
+endif()
+
+add_test(
+	NAME "yasme.inline"
+	COMMAND $<TARGET_FILE:yasme_inline_tests>
 )
