@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string>
@@ -33,6 +34,60 @@ namespace
 		bool show_version{};
 	};
 
+	[[nodiscard]] std::string_view trim(std::string_view s) noexcept
+	{
+		while (!s.empty()
+			   && (s.front() == ' ' || s.front() == '\t' || s.front() == '\n' || s.front() == '\r'))
+			s.remove_prefix(1);
+
+		while (!s.empty()
+			   && (s.back() == ' ' || s.back() == '\t' || s.back() == '\n' || s.back() == '\r'))
+			s.remove_suffix(1);
+
+		return s;
+	}
+
+	[[nodiscard]] std::vector<std::string> split_path_list(std::string_view s)
+	{
+		std::vector<std::string> out{};
+		if (s.empty())
+			return out;
+
+#if defined(_WIN32)
+		auto const sep = ';';
+#else
+		auto const sep = ':';
+#endif
+
+		std::size_t i = 0;
+		while (i <= s.size())
+		{
+			auto j = s.find(sep, i);
+			if (j == std::string_view::npos)
+				j = s.size();
+
+			auto part = trim(s.substr(i, j - i));
+			if (!part.empty())
+				out.push_back(std::string(part));
+
+			if (j == s.size())
+				break;
+
+			i = j + 1;
+		}
+
+		return out;
+	}
+
+	[[nodiscard]] std::vector<std::string> read_auto_include_paths()
+	{
+		auto* e = std::getenv("YASME_INCLUDE");
+		if (e == nullptr)
+			return {};
+
+		return split_path_list(std::string_view(e));
+	}
+
 	[[nodiscard]] std::string_view exe_basename(std::string_view p) noexcept
 	{
 		auto const pos = p.find_last_of("/\\");
@@ -47,6 +102,7 @@ namespace
 		   << "options:\n"
 		   << "  -o, --output <file>        output file\n"
 		   << "  -i <line>                  inline assembly statement before input (repeatable)\n"
+		   << "  -I, --include <dir>        add include search path (repeatable)\n"
 		   << "      --max-passes <n>       maximum assembly passes\n"
 		   << "      --no-error-unresolved  do not error on unresolved symbols in final pass\n"
 		   << "      --no-final-postpone    do not run 'postpone !' finalization blocks\n"
@@ -259,6 +315,17 @@ int main(int argc, char** argv)
 		return 0;
 	}
 
+	auto auto_includes = read_auto_include_paths();
+
+	std::vector<std::string> final_includes{};
+	final_includes.reserve(opt.include_paths.size() + auto_includes.size());
+
+	for (auto const& p : opt.include_paths)
+		final_includes.push_back(p);
+
+	for (auto const& p : auto_includes)
+		final_includes.push_back(p);
+
 	yasme::SourceManager sources{};
 	yasme::Diagnostics diag(sources, std::cerr);
 	diag.set_color_mode(opt.color);
@@ -273,7 +340,7 @@ int main(int argc, char** argv)
 	auto const in_id = in_id_res.value();
 
 	yasme::fe::ParserOptions fe_opt{};
-	fe_opt.include_paths = opt.include_paths;
+	fe_opt.include_paths = final_includes;
 
 	yasme::fe::Parser parser(sources, in_id, {}, fe_opt);
 	auto parse_res = parser.parse_program();
