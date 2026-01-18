@@ -365,6 +365,85 @@ end macro
 - `match` is purely lexical and never depends on resolution.
 - Only `eval` introduces evaluation and can become unresolved.
 
+### Macro diagnostics: `error ... end error`
+
+Macros can emit rich, user-facing diagnostics during expansion using an `error` block. This is intended for “checked” macros that validate argument shapes and context and can fail with a custom messages.
+
+> Note: `error` is **only** valid inside macro bodies. Using it at top level is a parse/expand error.
+
+### Syntax
+
+```asm
+error <message_expr> [, <tokens_binding>]
+  note        <message_expr> [, <tokens_binding>]
+  help        <message_expr> [, <tokens_binding>]
+  suggestion  <message_expr> [, <tokens_binding>]
+  ref         <message_expr> [, <tokens_binding>]
+end error
+```
+
+#### Header
+
+* `<message_expr>` is required.
+* `[, <tokens_binding>]` is optional; if present it selects the primary span for the diagnostic.
+
+#### Items
+
+* Any number of items may appear before `end error`.
+* Each item is one line (terminated by newline).
+* `note/help/suggestion/ref` are only recognized inside an `error` block.
+
+### Message rules
+
+Both the header message and each item message must expand to a string literal expression at macro-expansion time.
+
+That means:
+
+* `"literal"` works.
+* A macro parameter or local that expands to a string literal works.
+* Non-string expressions are rejected and produce an error diagnostic (and the macro error message falls back to a generic string).
+
+### Control-flow effect
+
+Emitting an `error` diagnostic aborts the remainder of the current macro expansion. Expansion then resumes at the macro call site.
+This makes `error` behave like a structured “fail fast” for macros.
+
+### Example
+
+```asm
+macro split_add tokens t
+	match t, {lhs} + {rhs}
+		eval a, lhs
+		eval b, rhs
+		dd a
+		dd b
+	else
+		error "expected form: <lhs> + <rhs>", t
+			note "the whole argument is highlighted", t
+			help "write something like: 1 + 2"
+			suggestion "if you need commas, wrap with parentheses"
+		end error
+	end match
+end macro
+```
+
+### Example with precise subspans
+
+```asm
+macro require_ident_plus_ident tokens t
+	match t, {a} + {b}
+		; ok
+	else
+		error "expected: <ident> + <ident>", t
+			note "left side should be an identifier", a
+			note "right side should be an identifier", b
+		end error
+	end match
+end macro
+```
+
+Here, `a` and `b` are token-list bindings produced by `match`, so they can be used to point notes at the exact subranges that failed expectations.
+
 ## Stream interaction primitives
 
 ### Load from a stream into a numeric variable
