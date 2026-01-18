@@ -118,6 +118,12 @@ namespace yasme::macro
 	class ExpanderImpl
 	{
 	public:
+		struct TokensSubstKey
+		{
+			MacroEnv const* env{};
+			std::string name{};
+		};
+
 		explicit ExpanderImpl(SourceManager& sources, Diagnostics& diag) noexcept
 			: m_sources(std::addressof(sources)), m_diag(std::addressof(diag))
 		{
@@ -182,19 +188,19 @@ namespace yasme::macro
 				m_include_stack.pop_back();
 		}
 
-		[[nodiscard]] bool push_tokens_subst(std::string_view name, SourceSpan use_span)
+		[[nodiscard]] bool
+		push_tokens_subst(MacroEnv const* env, std::string_view name, SourceSpan use_span)
 		{
-			for (auto const& n :
-				 m_tokens_subst_stack) // TODO key by (env pointer, name) to prevent schizo when nesting macros
+			for (auto const& k : m_tokens_subst_stack)
 			{
-				if (n == name)
+				if (k.env == env && k.name == name)
 				{
 					emit_error(use_span,
 							   "recursive tokens substitution of '" + std::string(name) + "'");
 					return false;
 				}
 			}
-			m_tokens_subst_stack.push_back(std::string(name));
+			m_tokens_subst_stack.push_back(TokensSubstKey{env, std::string(name)});
 			return true;
 		}
 
@@ -207,10 +213,14 @@ namespace yasme::macro
 		struct TokensSubstGuard
 		{
 			ExpanderImpl* self{};
+			MacroEnv const* env{};
 			bool active{};
 
-			TokensSubstGuard(ExpanderImpl* s, std::string_view name, SourceSpan use_span)
-				: self(s), active(s && s->push_tokens_subst(name, use_span))
+			TokensSubstGuard(ExpanderImpl* s,
+							 MacroEnv const* e,
+							 std::string_view name,
+							 SourceSpan use_span)
+				: self(s), env(e), active(s && s->push_tokens_subst(e, name, use_span))
 			{
 			}
 
@@ -561,7 +571,7 @@ namespace yasme::macro
 						return clone_expr(expr);
 					}
 
-					TokensSubstGuard guard(this, id->name, expr.span);
+					TokensSubstGuard guard(this, env, id->name, expr.span);
 					if (!guard.active)
 						return clone_expr(expr);
 
@@ -1569,7 +1579,7 @@ namespace yasme::macro
 		Diagnostics* m_diag{};
 		std::unordered_map<std::string, MacroDef> m_macros{};
 		std::vector<CallFrame> m_call_stack{};
-		std::vector<std::string> m_tokens_subst_stack{};
+		std::vector<TokensSubstKey> m_tokens_subst_stack{};
 		std::vector<std::string> m_include_stack{};
 		std::unordered_map<std::string, std::unique_ptr<fe::Program>> m_include_programs{};
 		std::vector<std::size_t> m_call_loop_base_stack{};
