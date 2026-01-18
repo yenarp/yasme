@@ -44,6 +44,7 @@ namespace yasme::macro
 		struct MacroValueTokens
 		{
 			TokenSlice slice{};
+			MacroEnv const* origin_env{};
 		};
 
 		struct MacroValueRefSymbol
@@ -452,7 +453,8 @@ namespace yasme::macro
 						if (auto const* tokens = std::get_if<MacroValueTokens>(&it->second))
 						{
 							auto expr = parse_expr(tokens->slice);
-							return expand_expr(expr, outer);
+							auto const* scope = tokens->origin_env ? tokens->origin_env : outer;
+							return expand_expr(expr, scope);
 						}
 					}
 				}
@@ -462,23 +464,23 @@ namespace yasme::macro
 			return expand_expr(expr, outer);
 		}
 
-		[[nodiscard]] TokenSlice resolve_tokens_arg(TokenSlice slice, MacroEnv const* outer)
+		[[nodiscard]] MacroValueTokens resolve_tokens_arg(TokenSlice slice, MacroEnv const* outer)
 		{
 			if (!outer)
-				return slice;
+				return MacroValueTokens{slice, nullptr};
 
 			lex::Token tok{};
 			if (!slice_is_single_ident(slice, tok))
-				return slice;
+				return MacroValueTokens{slice, outer};
 
 			auto it = outer->values.find(std::string(tok.lexeme));
 			if (it == outer->values.end())
-				return slice;
+				return MacroValueTokens{slice, outer};
 
 			if (auto const* tokens = std::get_if<MacroValueTokens>(&it->second))
-				return tokens->slice;
+				return *tokens;
 
-			return slice;
+			return MacroValueTokens{slice, outer};
 		}
 
 		[[nodiscard]] std::vector<TokenSlice> split_call_args(TokenSlice raw,
@@ -573,9 +575,10 @@ namespace yasme::macro
 
 				if (param.kind == fe::MacroParamKind::tokens)
 				{
-					TokenSlice slice{};
+					MacroValueTokens tokens_val{};
 					if (arg_index < call_args.size())
-						slice = resolve_tokens_arg(call_args[arg_index], outer);
+						tokens_val = resolve_tokens_arg(call_args[arg_index], outer);
+
 					else if (param_count != 1)
 					{
 						emit_error(param.span,
@@ -583,7 +586,7 @@ namespace yasme::macro
 						return false;
 					}
 
-					env.values[param.name] = MacroValueTokens{slice};
+					env.values[param.name] = tokens_val;
 					continue;
 				}
 
@@ -828,6 +831,7 @@ namespace yasme::macro
 						}
 
 						auto expr = parse_expr(tokens->slice);
+						expr = expand_expr(expr, tokens->origin_env ? tokens->origin_env : env);
 
 						if (env->locals.contains(node.out_name))
 						{
@@ -962,7 +966,7 @@ namespace yasme::macro
 									r.value = std::move(it_value->second);
 
 								restores.push_back(std::move(r));
-								env->values[name] = MacroValueTokens{slice};
+								env->values[name] = MacroValueTokens{slice, tokens->origin_env};
 							}
 
 							for (auto const& st2 : node.on_match)
