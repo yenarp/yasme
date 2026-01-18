@@ -137,6 +137,30 @@ namespace yasme::fe
 		std::vector<StmtPtr> body{};
 	};
 
+	enum class DiagItemKind
+	{
+		note,
+		help,
+		suggestion,
+		reference,
+	};
+
+	struct DiagItem
+	{
+		SourceSpan span{};
+		DiagItemKind kind{DiagItemKind::note};
+		ir::Expr message{};
+		std::optional<std::string> tokens_name{};
+	};
+
+	struct StmtMacroError
+	{
+		SourceSpan span{};
+		ir::Expr message{};
+		std::optional<std::string> primary_tokens{};
+		std::vector<DiagItem> items{};
+	};
+
 	struct Stmt
 	{
 		using Node = std::variant<StmtMacroDef,
@@ -152,7 +176,8 @@ namespace yasme::fe
 								  StmtWhile,
 								  StmtForNumeric,
 								  StmtForChars,
-								  StmtNormal>;
+								  StmtNormal,
+								  StmtMacroError>;
 
 		Node node{};
 

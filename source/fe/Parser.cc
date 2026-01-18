@@ -312,6 +312,16 @@ namespace yasme::fe
 		if (cur().is(lex::TokenKind::eof))
 			return nullptr;
 
+		if (cur().is(lex::TokenKind::kw_error))
+		{
+			if (!in_macro)
+			{
+				add_error(cur().span, "'error' is only valid inside macro bodies");
+				return nullptr;
+			}
+			return parse_stmt_macro_error();
+		}
+
 		add_error(cur().span, "unexpected token at start of statement");
 		advance();
 		return nullptr;
@@ -428,7 +438,7 @@ namespace yasme::fe
 				}
 			}
 
-			if (!cur().is(lex::TokenKind::identifier))
+			if (!(cur().is(lex::TokenKind::identifier) || cur().is(lex::TokenKind::kw_ref)))
 			{
 				add_error(cur().span, "expected parameter name");
 				recover_to_newline();
@@ -439,8 +449,12 @@ namespace yasme::fe
 			auto kind = MacroParamKind::plain;
 			lex::Token name_part = param_tok;
 
-			if (is_ident_named(param_tok, "name") || is_ident_named(param_tok, "ref")
-				|| is_ident_named(param_tok, "tokens"))
+			auto const is_name_mod = is_ident_named(param_tok, "name");
+			auto const is_tokens_mod = is_ident_named(param_tok, "tokens");
+			auto const is_ref_mod =
+				param_tok.is(lex::TokenKind::kw_ref) || is_ident_named(param_tok, "ref");
+
+			if (is_name_mod || is_ref_mod || is_tokens_mod)
 			{
 				if (!cur().is(lex::TokenKind::identifier))
 				{
@@ -449,14 +463,20 @@ namespace yasme::fe
 					break;
 				}
 
-				if (is_ident_named(param_tok, "name"))
+				if (is_name_mod)
 					kind = MacroParamKind::name;
-				else if (is_ident_named(param_tok, "ref"))
+				else if (is_ref_mod)
 					kind = MacroParamKind::ref;
 				else
 					kind = MacroParamKind::tokens;
 
 				name_part = consume();
+			}
+			else if (!param_tok.is(lex::TokenKind::identifier))
+			{
+				add_error(param_tok.span, "expected parameter name");
+				recover_to_newline();
+				break;
 			}
 
 			if (kind == MacroParamKind::tokens)
@@ -1444,6 +1464,145 @@ namespace yasme::fe
 		s.span = kw.span;
 		return std::make_unique<Stmt>(
 			Stmt(StmtNormal{std::make_unique<ir::Stmt>(ir::Stmt(std::move(s)))}));
+	}
+
+	StmtPtr Parser::parse_stmt_macro_error()
+	{
+		auto kw = consume();
+
+		if (cur().is(lex::TokenKind::newline) || cur().is(lex::TokenKind::eof))
+		{
+			add_error(cur().span, "expected error message expression after 'error'");
+			return nullptr;
+		}
+
+		auto msg = parse_expr();
+
+		std::optional<std::string> primary_tokens{};
+		if (accept(lex::TokenKind::comma))
+		{
+			if (!cur().is(lex::TokenKind::identifier))
+			{
+				add_error(cur().span, "expected tokens binding name after ','");
+				recover_to_newline();
+				return nullptr;
+			}
+			auto t = consume();
+			primary_tokens = std::string(t.lexeme);
+
+			while (!cur().is(lex::TokenKind::newline) && !cur().is(lex::TokenKind::eof))
+			{
+				add_error(cur().span, "unexpected token after error header");
+				advance();
+			}
+		}
+
+		skip_newlines();
+
+		std::vector<DiagItem> items{};
+
+		auto parse_item = [this](fe::DiagItemKind kind) -> std::optional<fe::DiagItem> {
+			auto item_kw = consume();
+
+			if (cur().is(lex::TokenKind::newline) || cur().is(lex::TokenKind::eof))
+			{
+				add_error(cur().span, "expected message expression");
+				return std::nullopt;
+			}
+
+			auto msg_expr = parse_expr();
+
+			std::optional<std::string> tokens_name{};
+			if (accept(lex::TokenKind::comma))
+			{
+				if (!cur().is(lex::TokenKind::identifier))
+				{
+					add_error(cur().span, "expected tokens binding name after ','");
+					recover_to_newline();
+					return std::nullopt;
+				}
+				auto tok = consume();
+				tokens_name = std::string(tok.lexeme);
+
+				while (!cur().is(lex::TokenKind::newline) && !cur().is(lex::TokenKind::eof))
+				{
+					add_error(cur().span, "unexpected token after diagnostic item");
+					advance();
+				}
+			}
+
+			fe::DiagItem item{};
+			item.span = merge_spans(item_kw.span, msg_expr.span);
+			item.kind = kind;
+			item.message = std::move(msg_expr);
+			item.tokens_name = std::move(tokens_name);
+			return item;
+		};
+
+		for (;;)
+		{
+			skip_newlines();
+
+			if (cur().is(lex::TokenKind::kw_end) && next().is(lex::TokenKind::kw_error))
+				break;
+
+			if (cur().is(lex::TokenKind::eof))
+			{
+				add_error(cur().span, "unexpected end of file in 'error' block");
+				break;
+			}
+
+			if (cur().is(lex::TokenKind::kw_note))
+			{
+				if (auto item = parse_item(fe::DiagItemKind::note))
+					items.push_back(std::move(*item));
+				recover_to_newline();
+				continue;
+			}
+
+			if (cur().is(lex::TokenKind::kw_help))
+			{
+				if (auto item = parse_item(fe::DiagItemKind::help))
+					items.push_back(std::move(*item));
+				recover_to_newline();
+				continue;
+			}
+
+			if (cur().is(lex::TokenKind::kw_suggestion))
+			{
+				if (auto item = parse_item(fe::DiagItemKind::suggestion))
+					items.push_back(std::move(*item));
+				recover_to_newline();
+				continue;
+			}
+
+			if (cur().is(lex::TokenKind::kw_ref))
+			{
+				if (auto item = parse_item(fe::DiagItemKind::reference))
+					items.push_back(std::move(*item));
+				recover_to_newline();
+				continue;
+			}
+
+			add_error(cur().span, "expected note/help/suggestion/ref or 'end error'");
+			recover_to_newline();
+		}
+
+		SourceSpan end_span = kw.span;
+		if (cur().is(lex::TokenKind::kw_end) && next().is(lex::TokenKind::kw_error))
+		{
+			auto end_kw = consume();
+			auto which = consume();
+			end_span = merge_spans(end_kw.span, which.span);
+		}
+
+		StmtMacroError st{};
+		st.span = merge_spans(kw.span, end_span);
+		st.message = std::move(msg);
+		st.primary_tokens = std::move(primary_tokens);
+		st.items = std::move(items);
+
+		return std::make_unique<Stmt>(Stmt(std::move(st)));
 	}
 
 	ir::Expr Parser::parse_expr(std::size_t min_prec)

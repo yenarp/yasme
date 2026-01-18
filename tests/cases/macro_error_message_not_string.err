@@ -1,0 +1,4 @@
+macro 'error' message must be a string
+macro expansion failed
+expanded from macro 'bad'
+

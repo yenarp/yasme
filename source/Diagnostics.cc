@@ -509,7 +509,6 @@ namespace yasme
 														 : strip_redundant_level_prefix(m.message);
 
 				auto note = std::string{};
-				note += "spans multiple lines";
 				if (!msg.empty())
 				{
 					note += ": ";

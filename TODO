@@ -1,2 +1,2 @@
-- [ ] Add a way to trigger an error in macro expansion.
+- [X] Add a way to trigger an error in macro expansion.
 - [ ] Clean-up the billions of hacks that RunYasmeCliCases.cmake has undergone during the process of debugging.

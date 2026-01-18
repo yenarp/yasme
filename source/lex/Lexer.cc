@@ -74,6 +74,16 @@ namespace yasme::lex
 			return TokenKind::kw_break;
 		if (eq("continue"))
 			return TokenKind::kw_continue;
+		if (eq("error"))
+			return TokenKind::kw_error;
+		if (eq("note"))
+			return TokenKind::kw_note;
+		if (eq("help"))
+			return TokenKind::kw_help;
+		if (eq("suggestion"))
+			return TokenKind::kw_suggestion;
+		if (eq("ref"))
+			return TokenKind::kw_ref;
 
 		return TokenKind::identifier;
 	}

@@ -43,6 +43,11 @@ namespace yasme::lex
 		kw_load,
 		kw_store,
 		kw_end,
+		kw_error,
+		kw_note,
+		kw_help,
+		kw_suggestion,
+		kw_ref,
 
 		lparen,
 		rparen,
@@ -148,6 +153,11 @@ namespace yasme::lex
 			case TokenKind::kw_load:
 			case TokenKind::kw_store:
 			case TokenKind::kw_end:
+			case TokenKind::kw_error:
+			case TokenKind::kw_note:
+			case TokenKind::kw_help:
+			case TokenKind::kw_suggestion:
+			case TokenKind::kw_ref:
 				return true;
 			default:
 				return false;
@@ -252,6 +262,16 @@ namespace yasme::lex
 				return "kw_break";
 			case TokenKind::kw_continue:
 				return "kw_continue";
+			case TokenKind::kw_error:
+				return "kw_error";
+			case TokenKind::kw_note:
+				return "kw_note";
+			case TokenKind::kw_help:
+				return "kw_help";
+			case TokenKind::kw_suggestion:
+				return "kw_suggestion";
+			case TokenKind::kw_ref:
+				return "kw_ref";
 
 			case TokenKind::lparen:
 				return "lparen";

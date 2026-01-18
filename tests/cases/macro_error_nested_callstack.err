@@ -1,0 +1,4 @@
+inner failed
+expanded from macro 'outer'
+expanded from macro 'inner'
+

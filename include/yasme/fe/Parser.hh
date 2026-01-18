@@ -80,6 +80,7 @@ namespace yasme::fe
 		StmtPtr parse_stmt_break();
 		StmtPtr parse_stmt_continue();
 		StmtPtr parse_stmt_unexpected_end();
+		StmtPtr parse_stmt_macro_error();
 
 		ir::Expr parse_expr(std::size_t min_prec = 0);
 

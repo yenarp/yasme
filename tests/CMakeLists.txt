@@ -94,10 +94,10 @@ if(TARGET yasme_cli)
 			)
 		endif()
 
-		set(out_file "${CMAKE_CURRENT_BINARY_DIR}/stl_cli_out/${stem}.bin")
+		set(out_file "${CMAKE_CURRENT_BINARY_DIR}/stl_out/${stem}.bin")
 
 		add_test(
-			NAME "yasme.cli.stl.${stem}"
+			NAME "yasme.stl.${stem}"
 			COMMAND ${CMAKE_COMMAND}
 				-DYASME_CLI=$<TARGET_FILE:yasme_cli>
 				-DINPUT=${asm_file}
@@ -108,7 +108,7 @@ if(TARGET yasme_cli)
 				-P "${YASME_CLI_CASE_SCRIPT}"
 		)
 
-		set_tests_properties("yasme.cli.stl.${stem}" PROPERTIES
+		set_tests_properties("yasme.stl.${stem}" PROPERTIES
 			WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
 		)
 	endforeach()

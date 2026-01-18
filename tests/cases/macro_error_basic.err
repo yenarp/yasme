@@ -1,0 +1,4 @@
+# minimal substrings that should appear
+fail: boom
+expanded from macro 'fail'
+
