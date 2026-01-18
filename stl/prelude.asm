@@ -5,6 +5,7 @@ macro use tokens arch
 	else match arch, x86
 		dw 80186
 	else match arch, EM64T
+		include 'arch/EM64T/core.asm'
 		db 64
 	else
 		error "invalid arch", arch
