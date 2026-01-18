@@ -543,9 +543,12 @@ namespace yasme::fe
 	StmtPtr Parser::parse_stmt_macro_call(std::string name, SourceSpan name_span)
 	{
 		std::vector<macro::TokenSlice> args{};
+		macro::TokenSlice raw_args{};
 
 		if (!cur().is(lex::TokenKind::newline) && !cur().is(lex::TokenKind::eof))
 		{
+			auto raw_start = m_index;
+
 			std::size_t arg_start = m_index;
 			int paren = 0;
 			int bracket = 0;
@@ -585,16 +588,21 @@ namespace yasme::fe
 
 			if (arg_start != m_index)
 				args.push_back(slice_from_indices(arg_start, m_index));
+
+			raw_args = slice_from_indices(raw_start, m_index);
 		}
 
 		SourceSpan span = name_span;
-		if (!args.empty())
+		if (raw_args.begin && raw_args.end)
+			span = merge_spans(name_span, raw_args.span);
+		else if (!args.empty())
 			span = merge_spans(name_span, args.back().span);
 
 		StmtMacroCall call{};
 		call.span = span;
 		call.callee = std::move(name);
 		call.args = std::move(args);
+		call.raw_args = raw_args;
 		return std::make_unique<Stmt>(Stmt(std::move(call)));
 	}
 

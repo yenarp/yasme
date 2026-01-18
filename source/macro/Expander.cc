@@ -481,6 +481,64 @@ namespace yasme::macro
 			return slice;
 		}
 
+		[[nodiscard]] std::vector<TokenSlice> split_call_args(TokenSlice raw,
+															  std::size_t split_commas)
+		{
+			std::vector<TokenSlice> out{};
+			if (!raw.begin || !raw.end)
+				return out;
+
+			auto count = slice_size(raw);
+			if (count == 0)
+				return out;
+
+			auto* begin = raw.begin;
+			std::size_t arg_start = 0;
+			std::size_t splits_left = split_commas;
+
+			int paren = 0;
+			int bracket = 0;
+			int brace = 0;
+
+			for (std::size_t i = 0; i < count; ++i)
+			{
+				auto const& tok = begin[i];
+
+				if (tok.is(lex::TokenKind::lparen))
+					++paren;
+				else if (tok.is(lex::TokenKind::rparen) && paren > 0)
+					--paren;
+				else if (tok.is(lex::TokenKind::lbracket))
+					++bracket;
+				else if (tok.is(lex::TokenKind::rbracket) && bracket > 0)
+					--bracket;
+				else if (tok.is(lex::TokenKind::lbrace))
+					++brace;
+				else if (tok.is(lex::TokenKind::rbrace) && brace > 0)
+					--brace;
+
+				if (!tok.is(lex::TokenKind::comma))
+					continue;
+				if (paren != 0 || bracket != 0 || brace != 0)
+					continue;
+				if (splits_left == 0)
+					continue;
+
+				if (arg_start == i)
+					emit_error(tok.span, "empty macro argument");
+				else
+					out.push_back(make_token_slice(begin + arg_start, begin + i));
+
+				arg_start = i + 1;
+				--splits_left;
+			}
+
+			if (arg_start < count)
+				out.push_back(make_token_slice(begin + arg_start, begin + count));
+
+			return out;
+		}
+
 		[[nodiscard]] bool bind_params(fe::StmtMacroCall const& call,
 									   fe::StmtMacroDef const& def,
 									   MacroEnv* outer,
@@ -489,10 +547,19 @@ namespace yasme::macro
 			std::size_t param_count = def.params.size();
 			bool has_tokens =
 				param_count > 0 && def.params.back().kind == fe::MacroParamKind::tokens;
-			std::size_t min_args = has_tokens ? (param_count - 1) : param_count;
+
+			std::size_t min_args = param_count;
+			if (has_tokens)
+				min_args = (param_count == 1) ? 0 : param_count;
+
 			std::size_t max_args = param_count;
 
-			if (call.args.size() < min_args || call.args.size() > max_args)
+			auto split_commas = has_tokens ? (param_count > 0 ? (param_count - 1) : 0)
+										   : std::numeric_limits<std::size_t>::max();
+
+			auto call_args = split_call_args(call.raw_args, split_commas);
+
+			if (call_args.size() < min_args || call_args.size() > max_args)
 			{
 				emit_error(call.span,
 						   make_macro_sig_error(def.name, min_args, max_args, call.args.size()));
@@ -507,8 +574,15 @@ namespace yasme::macro
 				if (param.kind == fe::MacroParamKind::tokens)
 				{
 					TokenSlice slice{};
-					if (arg_index < call.args.size())
-						slice = resolve_tokens_arg(call.args[arg_index], outer);
+					if (arg_index < call_args.size())
+						slice = resolve_tokens_arg(call_args[arg_index], outer);
+					else if (param_count != 1)
+					{
+						emit_error(param.span,
+								   "missing argument for parameter '" + param.name + "'");
+						return false;
+					}
+
 					env.values[param.name] = MacroValueTokens{slice};
 					continue;
 				}

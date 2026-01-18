@@ -44,6 +44,7 @@ namespace yasme::fe
 		SourceSpan span{};
 		std::string callee{};
 		std::vector<macro::TokenSlice> args{};
+		macro::TokenSlice raw_args{};
 	};
 
 	struct StmtLocal
