@@ -172,10 +172,8 @@ namespace yasme
 		e.line_starts.push_back(0);
 
 		for (FileByte i = 0; i < e.buffer.size(); ++i)
-		{
 			if (e.buffer[i] == '\n')
 				e.line_starts.push_back(i + 1);
-		}
 	}
 
 	Result<FileId, std::string> SourceManager::open_read(std::string_view filename) noexcept

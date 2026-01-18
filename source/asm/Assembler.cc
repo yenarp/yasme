@@ -1,11 +1,12 @@
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <limits>
 #include <optional>
+#include <span>
 #include <string_view>
 #include <utility>
 #include <yasme/asm/Assembler.hh>
-#include <yasme/ir/Parser.hh>
 
 namespace yasme
 {
@@ -19,27 +20,6 @@ namespace yasme
 
 		thread_local bool g_emit_diagnostics = false;
 		thread_local bool g_error_unresolved = false;
-
-		void emit_ir_parse_errors(Diagnostics& diag, std::span<const ir::ParseError> errs)
-		{
-			for (auto const& e : errs)
-			{
-				Diagnostic d{};
-				d.level = DiagnosticLevel::error;
-				d.message = e.message;
-				d.primary = e.span;
-				diag.emit(d);
-			}
-		}
-
-		bool ensure_newline(std::string& s)
-		{
-			if (!s.empty() && s.back() == '\n')
-				return true;
-
-			s.push_back('\n');
-			return true;
-		}
 
 		[[nodiscard]] std::uint64_t fnv1a_bytes(std::span<const std::uint8_t> bytes) noexcept
 		{
@@ -101,59 +81,10 @@ namespace yasme
 	{
 	}
 
-	Assembler::Assembler(SourceManager& sources, Diagnostics& diag) noexcept
-		: m_diag(std::addressof(diag)), m_sources(std::addressof(sources))
-	{
-	}
-
 	AssembleOutput Assembler::assemble(ir::Program const& program, AssembleOptions opt)
 	{
 		auto const err_before = m_diag->error_count();
-
-		ir::Program prefix{};
-		if (!opt.inline_lines.empty())
-		{
-			if (m_sources == nullptr)
-			{
-				Diagnostic d{};
-				d.level = DiagnosticLevel::error;
-				d.message =
-					"internal: inline assembly requested but assembler has no SourceManager";
-				m_diag->emit(d);
-			}
-			else
-			{
-				for (std::size_t i = 0; i < opt.inline_lines.size(); ++i)
-				{
-					std::string src = opt.inline_lines[i];
-					ensure_newline(src);
-
-					auto name = std::string("<inline:") + std::to_string(i) + ">";
-					auto id = m_sources->add_virtual(std::move(name), std::move(src));
-
-					ir::Parser parser(*m_sources, id);
-					auto res = parser.parse_program();
-					if (!res.errors.empty())
-					{
-						emit_ir_parse_errors(*m_diag, res.errors);
-						break;
-					}
-
-					for (auto& st : res.program.stmts)
-						prefix.stmts.push_back(std::move(st));
-				}
-			}
-		}
-
-		if (m_diag->error_count() != err_before)
-		{
-			AssembleOutput out{};
-			out.passes = 0;
-			out.errors = m_diag->error_count() - err_before;
-			return out;
-		}
-
-		auto* prefix_ptr = prefix.stmts.empty() ? nullptr : std::addressof(prefix);
+		std::size_t detection_passes_ran = 0;
 
 		PassState last{};
 		std::size_t last_fp{};
@@ -164,12 +95,13 @@ namespace yasme
 
 		for (std::size_t pass = 0; pass < detection_limit; ++pass)
 		{
+			++detection_passes_ran;
 			auto const seed = have_last ? seed_next_pass(last) : seed_next_pass(PassState{});
 
 			g_emit_diagnostics = false;
 			g_error_unresolved = false;
 
-			auto cur = run_pass(program, seed, prefix_ptr);
+			auto cur = run_pass(program, seed);
 			auto const fp = fingerprint(cur);
 
 			if (have_last && fp == last_fp)
@@ -190,7 +122,7 @@ namespace yasme
 		g_emit_diagnostics = true;
 		g_error_unresolved = opt.error_on_unresolved;
 
-		auto final_state = run_pass(program, final_seed, prefix_ptr);
+		auto final_state = run_pass(program, final_seed);
 		auto const fp_final = fingerprint(final_state);
 
 		if (!stable && have_last && fp_final == last_fp)
@@ -202,34 +134,17 @@ namespace yasme
 		if (!stable && opt.max_passes > 0)
 		{
 			SourceSpan anchor{};
-			auto const pick_anchor = [&](ir::Program const& p) {
-				if (p.stmts.empty() || !p.stmts.front())
-					return false;
-
-				std::visit(
-					Overload{
-						[&](auto const& s) { anchor = s.span; },
-					},
-					p.stmts.front()->node);
-				return true;
-			};
-
-			if (prefix_ptr != nullptr)
-				pick_anchor(*prefix_ptr);
-
-			if (anchor.id == FileId{})
+			if (!program.stmts.empty() && program.stmts.front())
 			{
-				pick_anchor(program);
+				std::visit(Overload{[&](auto const& s) { anchor = s.span; }},
+						   program.stmts.front()->node);
 			}
 			error(
 				final_state, anchor, "assembly did not stabilize within the configured pass limit");
 		}
 
 		AssembleOutput out{};
-		out.passes = (detection_limit > 0
-						  ? std::min(detection_limit, stable ? detection_limit : detection_limit)
-						  : 0)
-					 + 1;
+		out.passes = detection_passes_ran + 1;
 
 		auto it = final_state.streams.find("output");
 		if (it != final_state.streams.end())
@@ -239,11 +154,11 @@ namespace yasme
 		return out;
 	}
 
-	Assembler::PassState Assembler::run_pass(ir::Program const& program,
-											 PassState const& seed,
-											 ir::Program const* prefix)
+	Assembler::PassState Assembler::run_pass(ir::Program const& program, PassState const& seed)
 	{
 		PassState st = seed;
+		st.postpone_each_pass.clear();
+		st.postpone_after_stable.clear();
 
 		if (!st.streams.contains("output"))
 			st.streams.emplace("output", Stream{.name = "output"});
@@ -259,9 +174,6 @@ namespace yasme
 				walk_stmt(st, *sp);
 			}
 		};
-
-		if (prefix != nullptr)
-			walk_prog(*prefix);
 
 		walk_prog(program);
 
@@ -814,6 +726,26 @@ namespace yasme
 		return static_cast<std::int64_t>(v);
 	}
 
+	static std::optional<std::int64_t> sub_i64_checked(std::int64_t a, std::int64_t b) noexcept
+	{
+		__int128 v = static_cast<__int128>(a) - static_cast<__int128>(b);
+		if (v < static_cast<__int128>(std::numeric_limits<std::int64_t>::min()))
+			return std::nullopt;
+		if (v > static_cast<__int128>(std::numeric_limits<std::int64_t>::max()))
+			return std::nullopt;
+		return static_cast<std::int64_t>(v);
+	}
+
+	static std::optional<std::int64_t> mul_i64_checked(std::int64_t a, std::int64_t b) noexcept
+	{
+		__int128 v = static_cast<__int128>(a) * static_cast<__int128>(b);
+		if (v < static_cast<__int128>(std::numeric_limits<std::int64_t>::min()))
+			return std::nullopt;
+		if (v > static_cast<__int128>(std::numeric_limits<std::int64_t>::max()))
+			return std::nullopt;
+		return static_cast<std::int64_t>(v);
+	}
+
 	Assembler::Flow Assembler::apply_if(PassState& st, ir::StmtIf const& s)
 	{
 		auto v = eval_value(st, s.cond);
@@ -1258,7 +1190,13 @@ namespace yasme
 								error(st, e.span, "unary - expects an integer");
 								return Unknown{};
 							}
-							return -std::get<std::int64_t>(rhs);
+							auto const v = std::get<std::int64_t>(rhs);
+							if (v == std::numeric_limits<std::int64_t>::min())
+							{
+								error(st, e.span, "integer overflow in unary -");
+								return Unknown{};
+							}
+							return -v;
 						}
 						case ir::UnaryOp::bit_not: {
 							if (is_unknown(rhs))
@@ -1455,16 +1393,42 @@ namespace yasme
 
 					switch (op)
 					{
-						case ir::BinaryOp::add:
-							return a + c;
-						case ir::BinaryOp::sub:
-							return a - c;
-						case ir::BinaryOp::mul:
-							return a * c;
+						case ir::BinaryOp::add: {
+							auto r = add_i64_checked(a, c);
+							if (!r)
+							{
+								error(st, e.span, "integer overflow in +");
+								return Unknown{};
+							}
+							return *r;
+						}
+						case ir::BinaryOp::sub: {
+							auto r = sub_i64_checked(a, c);
+							if (!r)
+							{
+								error(st, e.span, "integer overflow in -");
+								return Unknown{};
+							}
+							return *r;
+						}
+						case ir::BinaryOp::mul: {
+							auto r = mul_i64_checked(a, c);
+							if (!r)
+							{
+								error(st, e.span, "integer overflow in *");
+								return Unknown{};
+							}
+							return *r;
+						}
 						case ir::BinaryOp::div:
 							if (c == 0)
 							{
 								error(st, e.span, "division by zero");
+								return Unknown{};
+							}
+							if (a == std::numeric_limits<std::int64_t>::min() && c == -1)
+							{
+								error(st, e.span, "integer overflow in /");
 								return Unknown{};
 							}
 							return a / c;

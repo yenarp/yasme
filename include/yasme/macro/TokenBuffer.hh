@@ -15,7 +15,7 @@ namespace yasme::macro
 
 		void reset(SourceManager const& sources, FileId file, lex::LexerOptions opt = {});
 
-		[[nodiscard]] std::span<const lex::Token> tokens() const noexcept
+		[[nodiscard]] const std::span<const yasme::lex::Token> tokens() const noexcept
 		{
 			return {m_tokens.data(), m_tokens.size()};
 		}

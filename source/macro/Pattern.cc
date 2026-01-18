@@ -7,7 +7,7 @@ namespace yasme::macro
 	static bool is_literal_kind(lex::TokenKind kind) noexcept
 	{
 		return kind == lex::TokenKind::identifier || kind == lex::TokenKind::integer
-			|| kind == lex::TokenKind::string || kind == lex::TokenKind::char_literal;
+			   || kind == lex::TokenKind::string || kind == lex::TokenKind::char_literal;
 	}
 
 	static bool tokens_equivalent(lex::Token const& a, lex::Token const& b) noexcept
@@ -29,10 +29,8 @@ namespace yasme::macro
 			return false;
 
 		for (std::size_t i = 0; i < a_len; ++i)
-		{
 			if (!tokens_equivalent(a.begin[i], b.begin[i]))
 				return false;
-		}
 
 		return true;
 	}
@@ -66,8 +64,8 @@ namespace yasme::macro
 			{
 				if (i + 1 >= count)
 				{
-					out.errors.push_back(PatternParseError{tok.span,
-														   "expected identifier after '{'"});
+					out.errors.push_back(
+						PatternParseError{tok.span, "expected identifier after '{'"});
 					break;
 				}
 
@@ -86,10 +84,8 @@ namespace yasme::macro
 					out.errors.push_back(
 						PatternParseError{name_tok.span, "expected '}' after binding name"});
 					for (; close_idx < count; ++close_idx)
-					{
 						if (begin[close_idx].kind == lex::TokenKind::rbrace)
 							break;
-					}
 				}
 
 				if (close_idx >= count || begin[close_idx].kind != lex::TokenKind::rbrace)
@@ -99,9 +95,7 @@ namespace yasme::macro
 				}
 
 				PatternBind bind{};
-				bind.span = SourceSpan{name_tok.span.id,
-									   tok.span.begin,
-									   begin[close_idx].span.end};
+				bind.span = SourceSpan{name_tok.span.id, tok.span.begin, begin[close_idx].span.end};
 				bind.name = std::string(name_tok.lexeme);
 				out.pattern.elems.push_back(std::move(bind));
 				i = close_idx;
@@ -176,10 +170,8 @@ namespace yasme::macro
 		if (std::holds_alternative<PatternEllipsis>(elem))
 		{
 			for (std::size_t len = 0; tok_idx + len <= tok_size; ++len)
-			{
 				if (match_from(pattern, input, pat_idx + 1, tok_idx + len, result))
 					return true;
-			}
 			return false;
 		}
 
@@ -190,8 +182,7 @@ namespace yasme::macro
 
 		for (std::size_t len = 1; len <= max_len; ++len)
 		{
-			auto slice =
-				make_token_slice(input.begin + tok_idx, input.begin + tok_idx + len);
+			auto slice = make_token_slice(input.begin + tok_idx, input.begin + tok_idx + len);
 
 			auto existing = result.bindings.find(bind.name);
 			if (existing != result.bindings.end())

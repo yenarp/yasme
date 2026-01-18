@@ -12,10 +12,8 @@ namespace yasme::ir
 			return {IdentifierError::bad_start, 0};
 
 		for (std::size_t i = 1; i < s.size(); ++i)
-		{
 			if (!is_ident_continue(s[i]))
 				return {IdentifierError::bad_char, i};
-		}
 
 		return {IdentifierError::none, 0};
 	}

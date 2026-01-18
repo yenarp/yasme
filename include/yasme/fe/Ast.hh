@@ -2,6 +2,7 @@
 #define YASME_FE_AST_HH
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <variant>
 #include <vector>
@@ -87,6 +88,55 @@ namespace yasme::fe
 		ir::StmtPtr stmt{};
 	};
 
+	struct StmtInclude
+	{
+		SourceSpan span{};
+		std::string raw_path{};
+		FileId file{};
+		std::string normalized_key{};
+	};
+
+	struct StmtIf
+	{
+		SourceSpan span{};
+		ir::Expr cond{};
+		std::vector<StmtPtr> then_body{};
+		std::vector<StmtPtr> else_body{};
+		bool has_else{};
+	};
+
+	struct StmtRepeat
+	{
+		SourceSpan span{};
+		ir::Expr count{};
+		std::vector<StmtPtr> body{};
+	};
+
+	struct StmtWhile
+	{
+		SourceSpan span{};
+		ir::Expr cond{};
+		std::vector<StmtPtr> body{};
+	};
+
+	struct StmtForNumeric
+	{
+		SourceSpan span{};
+		std::string var{};
+		ir::Expr start{};
+		ir::Expr end{};
+		std::optional<ir::Expr> step{};
+		std::vector<StmtPtr> body{};
+	};
+
+	struct StmtForChars
+	{
+		SourceSpan span{};
+		std::string var{};
+		ir::Expr str{};
+		std::vector<StmtPtr> body{};
+	};
+
 	struct Stmt
 	{
 		using Node = std::variant<StmtMacroDef,
@@ -96,6 +146,12 @@ namespace yasme::fe
 								  StmtVirtual,
 								  StmtPostpone,
 								  StmtMatch,
+								  StmtInclude,
+								  StmtIf,
+								  StmtRepeat,
+								  StmtWhile,
+								  StmtForNumeric,
+								  StmtForChars,
 								  StmtNormal>;
 
 		Node node{};

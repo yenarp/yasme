@@ -399,10 +399,8 @@ namespace yasme
 
 		auto file_group = [&](FileId id) -> FileGroup& {
 			for (auto& f : files)
-			{
 				if (f.id == id)
 					return f;
-			}
 
 			FileGroup f{};
 			f.id = id;
@@ -413,10 +411,8 @@ namespace yasme
 
 		auto line_group = [&](FileGroup& fg, std::size_t line) -> LineGroup& {
 			for (auto& lg : fg.lines)
-			{
 				if (lg.line == line)
 					return lg;
-			}
 
 			LineGroup lg{};
 			lg.line = line;

@@ -10,6 +10,7 @@ IndentCaseLabels: true
 IndentCaseBlocks: false
 IndentGotoLabels: false
 IndentPPDirectives: AfterHash
+RemoveBracesLLVM: true
 
 BreakBeforeBraces: Custom
 BraceWrapping:

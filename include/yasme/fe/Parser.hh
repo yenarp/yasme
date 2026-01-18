@@ -3,6 +3,7 @@
 
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 #include <yasme/fe/Ast.hh>
 #include <yasme/ir/ExprParser.hh>
@@ -63,6 +64,7 @@ namespace yasme::fe
 		StmtPtr parse_stmt_local();
 		StmtPtr parse_stmt_eval();
 		StmtPtr parse_stmt_match();
+		StmtPtr parse_stmt_include();
 
 		StmtPtr parse_stmt_org();
 		StmtPtr parse_stmt_label_or_assign();
@@ -86,6 +88,11 @@ namespace yasme::fe
 		[[nodiscard]] SourceSpan merge_spans(SourceSpan a, SourceSpan b) const noexcept;
 
 	private:
+		SourceManager* m_sources{};
+		FileId m_file{};
+		lex::LexerOptions m_lex_opt{};
+		std::unordered_map<std::string, FileId> m_include_cache{};
+
 		std::shared_ptr<std::vector<lex::Token>> m_tokens{};
 		std::size_t m_index{};
 

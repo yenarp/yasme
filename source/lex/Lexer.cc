@@ -11,10 +11,8 @@ namespace yasme::lex
 			return false;
 
 		for (std::size_t i = 0; i < a.size(); ++i)
-		{
 			if (ascii_tolower(a[i]) != ascii_tolower(b[i]))
 				return false;
-		}
 
 		return true;
 	}

@@ -8,6 +8,7 @@
 #include <vector>
 #include <yasme/Diagnostics.hh>
 #include <yasme/fe/Ast.hh>
+#include <yasme/fe/Parser.hh>
 #include <yasme/ir/ExprParser.hh>
 #include <yasme/macro/Expander.hh>
 #include <yasme/macro/Pattern.hh>
@@ -102,7 +103,7 @@ namespace yasme::macro
 	class ExpanderImpl
 	{
 	public:
-		explicit ExpanderImpl(SourceManager const& sources, Diagnostics& diag) noexcept
+		explicit ExpanderImpl(SourceManager& sources, Diagnostics& diag) noexcept
 			: m_sources(std::addressof(sources)), m_diag(std::addressof(diag))
 		{
 		}
@@ -111,6 +112,8 @@ namespace yasme::macro
 		{
 			m_macros.clear();
 			m_call_stack.clear();
+			m_include_stack.clear();
+			m_include_programs.clear();
 
 			for (auto const& st : program.stmts)
 				collect_macros(*st);
@@ -118,24 +121,70 @@ namespace yasme::macro
 			ir::Program out{};
 			for (auto const& st : program.stmts)
 				expand_stmt(*st, nullptr, out.stmts);
-
 			return out;
 		}
 
 	private:
+		void emit_fe_parse_errors(std::vector<fe::ParseError> const& errs)
+		{
+			for (auto const& e : errs)
+				emit_error(e.span, e.message);
+		}
+
+		[[nodiscard]] bool push_include(std::string_view key, SourceSpan where)
+		{
+			if (key.empty())
+				return false;
+
+			if (m_include_stack.size() > 128)
+			{
+				emit_error(where, "include nesting is too deep");
+				return false;
+			}
+
+			for (auto const& k : m_include_stack)
+			{
+				if (k == key)
+				{
+					emit_error(where, "recursive include of '" + std::string(key) + "'");
+					return false;
+				}
+			}
+
+			m_include_stack.push_back(std::string(key));
+			return true;
+		}
+
+		void pop_include() noexcept
+		{
+			if (!m_include_stack.empty())
+				m_include_stack.pop_back();
+		}
+
+		[[nodiscard]] fe::Program const* load_include_program(fe::StmtInclude const& node)
+		{
+			if (node.file == FileId{} || node.normalized_key.empty())
+				return nullptr;
+
+			auto it = m_include_programs.find(node.normalized_key);
+			if (it != m_include_programs.end())
+				return it->second.get();
+
+			fe::Parser parser(*m_sources, node.file, {}, {});
+			auto res = parser.parse_program();
+			if (!res.errors.empty())
+				emit_fe_parse_errors(res.errors);
+
+			auto p = std::make_unique<fe::Program>(std::move(res.program));
+			auto* ptr = p.get();
+			m_include_programs.emplace(node.normalized_key, std::move(p));
+			return ptr;
+		}
+
 		void collect_macros(fe::Stmt const& st)
 		{
 			std::visit(Overload{
-						   [this](fe::StmtMacroDef const& node) {
-							   auto it = m_macros.find(node.name);
-							   if (it != m_macros.end())
-							   {
-								   emit_error(node.span,
-											  "redefinition of macro '" + node.name + "'");
-								   return;
-							   }
-							   m_macros.emplace(node.name, MacroDef{std::addressof(node)});
-						   },
+						   [this](fe::StmtMacroDef const& node) { define_macro(node); },
 						   [this](fe::StmtVirtual const& node) {
 							   for (auto const& nested : node.body)
 								   collect_macros(*nested);
@@ -144,9 +193,58 @@ namespace yasme::macro
 							   for (auto const& nested : node.body)
 								   collect_macros(*nested);
 						   },
+						   [this](fe::StmtIf const& node) {
+							   for (auto const& nested : node.then_body)
+								   collect_macros(*nested);
+							   for (auto const& nested : node.else_body)
+								   collect_macros(*nested);
+						   },
+						   [this](fe::StmtRepeat const& node) {
+							   for (auto const& nested : node.body)
+								   collect_macros(*nested);
+						   },
+						   [this](fe::StmtWhile const& node) {
+							   for (auto const& nested : node.body)
+								   collect_macros(*nested);
+						   },
+						   [this](fe::StmtForNumeric const& node) {
+							   for (auto const& nested : node.body)
+								   collect_macros(*nested);
+						   },
+						   [this](fe::StmtForChars const& node) {
+							   for (auto const& nested : node.body)
+								   collect_macros(*nested);
+						   },
+						   [this](fe::StmtInclude const& node) {
+							   if (node.normalized_key.empty() || node.file == FileId{})
+								   return;
+
+							   if (!push_include(node.normalized_key, node.span))
+								   return;
+
+							   auto const* p = load_include_program(node);
+							   if (p != nullptr)
+								   for (auto const& st2 : p->stmts)
+									   collect_macros(*st2);
+
+							   pop_include();
+						   },
 						   [](auto const&) {},
 					   },
 					   st.node);
+		}
+
+		bool define_macro(fe::StmtMacroDef const& node)
+		{
+			auto it = m_macros.find(node.name);
+			if (it != m_macros.end())
+			{
+				emit_error(node.span, "redefinition of macro '" + node.name + "'");
+				return false;
+			}
+
+			m_macros.emplace(node.name, MacroDef{std::addressof(node)});
+			return true;
 		}
 
 		void emit_error(SourceSpan span, std::string message)
@@ -415,7 +513,21 @@ namespace yasme::macro
 				Overload{
 					[this, env](fe::StmtMacroDef const& node) {
 						if (env)
-							emit_error(node.span, "macro definitions cannot appear inside macros");
+							define_macro(node);
+					},
+					[this, env, &out](fe::StmtInclude const& node) {
+						if (node.normalized_key.empty() || node.file == FileId{})
+							return;
+
+						if (!push_include(node.normalized_key, node.span))
+							return;
+
+						auto const* p = load_include_program(node);
+						if (p != nullptr)
+							for (auto const& st2 : p->stmts)
+								expand_stmt(*st2, env, out);
+
+						pop_include();
 					},
 					[this, env, &out](fe::StmtMacroCall const& node) {
 						auto expanded = expand_macro_call(node, env);
@@ -489,6 +601,65 @@ namespace yasme::macro
 						assign.name = std::move(out_name);
 						assign.rhs = std::move(expr);
 						out.push_back(std::make_unique<ir::Stmt>(ir::Stmt(std::move(assign))));
+					},
+					[this, env, &out](fe::StmtIf const& node) {
+						ir::StmtIf s{};
+						s.span = node.span;
+						s.cond = expand_expr(node.cond, env);
+						s.has_else = node.has_else;
+
+						for (auto const& st2 : node.then_body)
+							expand_stmt(*st2, env, s.then_body);
+
+						for (auto const& st2 : node.else_body)
+							expand_stmt(*st2, env, s.else_body);
+
+						out.push_back(std::make_unique<ir::Stmt>(ir::Stmt(std::move(s))));
+					},
+					[this, env, &out](fe::StmtRepeat const& node) {
+						ir::StmtRepeat s{};
+						s.span = node.span;
+						s.count = expand_expr(node.count, env);
+
+						for (auto const& st2 : node.body)
+							expand_stmt(*st2, env, s.body);
+
+						out.push_back(std::make_unique<ir::Stmt>(ir::Stmt(std::move(s))));
+					},
+					[this, env, &out](fe::StmtWhile const& node) {
+						ir::StmtWhile s{};
+						s.span = node.span;
+						s.cond = expand_expr(node.cond, env);
+
+						for (auto const& st2 : node.body)
+							expand_stmt(*st2, env, s.body);
+
+						out.push_back(std::make_unique<ir::Stmt>(ir::Stmt(std::move(s))));
+					},
+					[this, env, &out](fe::StmtForNumeric const& node) {
+						ir::StmtForNumeric s{};
+						s.span = node.span;
+						s.var = node.var;
+						s.start = expand_expr(node.start, env);
+						s.end = expand_expr(node.end, env);
+						if (node.step)
+							s.step = expand_expr(*node.step, env);
+
+						for (auto const& st2 : node.body)
+							expand_stmt(*st2, env, s.body);
+
+						out.push_back(std::make_unique<ir::Stmt>(ir::Stmt(std::move(s))));
+					},
+					[this, env, &out](fe::StmtForChars const& node) {
+						ir::StmtForChars s{};
+						s.span = node.span;
+						s.var = node.var;
+						s.str = expand_expr(node.str, env);
+
+						for (auto const& st2 : node.body)
+							expand_stmt(*st2, env, s.body);
+
+						out.push_back(std::make_unique<ir::Stmt>(ir::Stmt(std::move(s))));
 					},
 					[this, env, &out](fe::StmtMatch const& node) {
 						if (!env)
@@ -800,13 +971,15 @@ namespace yasme::macro
 		}
 
 	private:
-		SourceManager const* m_sources{};
+		SourceManager* m_sources{};
 		Diagnostics* m_diag{};
 		std::unordered_map<std::string, MacroDef> m_macros{};
 		std::vector<CallFrame> m_call_stack{};
+		std::vector<std::string> m_include_stack{};
+		std::unordered_map<std::string, std::unique_ptr<fe::Program>> m_include_programs{};
 	};
 
-	Expander::Expander(SourceManager const& sources, Diagnostics& diag) noexcept
+	Expander::Expander(SourceManager& sources, Diagnostics& diag) noexcept
 		: m_sources(std::addressof(sources)), m_diag(std::addressof(diag))
 	{
 	}

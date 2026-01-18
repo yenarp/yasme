@@ -62,10 +62,66 @@ foreach(asm_file IN LISTS YASME_TEST_ASM_FILES)
 	)
 endforeach()
 
+if(TARGET yasme_cli)
+	set(YASME_CLI_CASE_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/RunYasmeCliCases.cmake")
+	set(YASME_STL_TEST_CASES_DIR "${CMAKE_CURRENT_SOURCE_DIR}/stl/cases")
+
+	file(GLOB YASME_STL_ASM_FILES CONFIGURE_DEPENDS
+		"${YASME_STL_TEST_CASES_DIR}/*.asm"
+	)
+
+	foreach(asm_file IN LISTS YASME_STL_ASM_FILES)
+		get_filename_component(stem "${asm_file}" NAME_WE)
+
+		set(exp_bytes "${YASME_STL_TEST_CASES_DIR}/${stem}.bytes")
+		set(exp_hex   "${YASME_STL_TEST_CASES_DIR}/${stem}.hex")
+		set(exp_bin   "${YASME_STL_TEST_CASES_DIR}/${stem}.bin")
+		set(exp_err   "${YASME_STL_TEST_CASES_DIR}/${stem}.err")
+
+		set(expected "")
+		if(EXISTS "${exp_err}")
+			set(expected "${exp_err}")
+		elseif(EXISTS "${exp_bytes}")
+			set(expected "${exp_bytes}")
+		elseif(EXISTS "${exp_hex}")
+			set(expected "${exp_hex}")
+		elseif(EXISTS "${exp_bin}")
+			set(expected "${exp_bin}")
+		else()
+			message(FATAL_ERROR
+				"Missing expected output for ${asm_file}. "
+				"Create ${stem}.bytes, ${stem}.hex, ${stem}.bin, or ${stem}.err in ${YASME_STL_TEST_CASES_DIR}."
+			)
+		endif()
+
+		set(out_file "${CMAKE_CURRENT_BINARY_DIR}/stl_cli_out/${stem}.bin")
+
+		add_test(
+			NAME "yasme.cli.stl.${stem}"
+			COMMAND ${CMAKE_COMMAND}
+				-DYASME_CLI=$<TARGET_FILE:yasme_cli>
+				-DINPUT=${asm_file}
+				-DEXPECTED=${expected}
+				-DOUTFILE=${out_file}
+				-DWORKDIR=${CMAKE_CURRENT_SOURCE_DIR}
+				-DINCLUDE_ENV=${PROJECT_SOURCE_DIR}/stl/
+				-P "${YASME_CLI_CASE_SCRIPT}"
+		)
+
+		set_tests_properties("yasme.cli.stl.${stem}" PROPERTIES
+			WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+		)
+	endforeach()
+endif()
+
 add_custom_target(check
 	COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
 	DEPENDS yasme_test_runner yasme_pattern_tests yasme_inline_tests
 )
+
+if(TARGET yasme_cli)
+	add_dependencies(check yasme_cli)
+endif()
 
 add_executable(yasme_pattern_tests
 	PatternTests.cc

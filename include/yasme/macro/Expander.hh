@@ -16,12 +16,12 @@ namespace yasme::macro
 	class Expander
 	{
 	public:
-		explicit Expander(SourceManager const& sources, Diagnostics& diag) noexcept;
+		explicit Expander(SourceManager& sources, Diagnostics& diag) noexcept;
 
 		[[nodiscard]] ir::Program expand(fe::Program const& program);
 
 	private:
-		SourceManager const* m_sources{};
+		SourceManager* m_sources{};
 		Diagnostics* m_diag{};
 	};
 

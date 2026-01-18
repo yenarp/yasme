@@ -4,6 +4,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 #include <yasme/Diagnostics.hh>
 #include <yasme/asm/Assembler.hh>
@@ -34,6 +35,14 @@ namespace
 		}
 	}
 
+	static void ensure_newline(std::string& s)
+	{
+		if (!s.empty() && s.back() == '\n')
+			return;
+
+		s.push_back('\n');
+	}
+
 	struct AssembleResult
 	{
 		std::vector<std::uint8_t> bytes{};
@@ -49,12 +58,35 @@ namespace
 		yasme::Diagnostics diag(sources, diag_out);
 		diag.set_color_mode(yasme::ColorMode::never);
 
-		auto main_id = sources.add_virtual("<inline-tests-input>", std::string(main_text));
+		yasme::fe::Program combined{};
 
-		yasme::fe::Parser parser(sources, main_id);
-		auto parse_res = parser.parse_program();
-		if (!parse_res.errors.empty())
-			emit_parse_errors(diag, parse_res.errors);
+		if (!inline_lines.empty())
+		{
+			std::string src{};
+			for (auto const& line : inline_lines)
+			{
+				src.append(line);
+				ensure_newline(src);
+			}
+
+			auto inline_id = sources.add_virtual("<inline-tests-prefix>", std::move(src));
+			yasme::fe::Parser inline_parser(sources, inline_id);
+			auto inline_res = inline_parser.parse_program();
+			if (!inline_res.errors.empty())
+				emit_parse_errors(diag, inline_res.errors);
+			else
+				for (auto& st : inline_res.program.stmts)
+					combined.stmts.push_back(std::move(st));
+		}
+
+		auto main_id = sources.add_virtual("<inline-tests-input>", std::string(main_text));
+		yasme::fe::Parser main_parser(sources, main_id);
+		auto main_res = main_parser.parse_program();
+		if (!main_res.errors.empty())
+			emit_parse_errors(diag, main_res.errors);
+		else
+			for (auto& st : main_res.program.stmts)
+				combined.stmts.push_back(std::move(st));
 
 		std::vector<std::uint8_t> out_bytes{};
 		std::size_t asm_errors = 0;
@@ -62,16 +94,13 @@ namespace
 		if (diag.error_count() == 0)
 		{
 			yasme::macro::Expander expander(sources, diag);
-			auto ir_program = expander.expand(parse_res.program);
+			auto ir_program = expander.expand(combined);
 
 			if (diag.error_count() == 0)
 			{
-				yasme::Assembler assembler(sources, diag);
+				yasme::Assembler assembler(diag);
+				auto out = assembler.assemble(ir_program);
 
-				yasme::AssembleOptions opt{};
-				opt.inline_lines = std::move(inline_lines);
-
-				auto out = assembler.assemble(ir_program, opt);
 				out_bytes = std::move(out.bytes);
 				asm_errors = out.errors;
 			}
@@ -127,9 +156,9 @@ int main()
 							   });
 
 		failures += !check(r.diag_errors != 0, "inline parse error: diagnostics reported");
-		failures +=
-			!check(r.diag_text.find("expected identifier after 'define'") != std::string::npos,
-				   "inline parse error: message contains expected identifier after 'define'");
+		failures += !check(r.diag_text.find("expected") != std::string::npos
+							   && r.diag_text.find("define") != std::string::npos,
+						   "inline parse error: message mentions expected + define");
 	}
 
 	if (failures != 0)

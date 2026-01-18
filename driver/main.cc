@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <iostream>
 #include <limits>
 #include <optional>
@@ -34,6 +35,27 @@ namespace
 		bool show_version{};
 	};
 
+	static void ensure_newline(std::string& s)
+	{
+		if (!s.empty() && s.back() == '\n')
+			return;
+
+		s.push_back('\n');
+	}
+
+	[[nodiscard]] std::string_view strip_surrounding_quotes(std::string_view s) noexcept
+	{
+		if (s.size() < 2)
+			return s;
+
+		auto const q0 = s.front();
+		auto const q1 = s.back();
+		if ((q0 == '"' && q1 == '"') || (q0 == '\'' && q1 == '\''))
+			return s.substr(1, s.size() - 2);
+
+		return s;
+	}
+
 	[[nodiscard]] std::string_view trim(std::string_view s) noexcept
 	{
 		while (!s.empty()
@@ -53,6 +75,8 @@ namespace
 		if (s.empty())
 			return out;
 
+		s = strip_surrounding_quotes(trim(s));
+
 #if defined(_WIN32)
 		auto const sep = ';';
 #else
@@ -67,6 +91,7 @@ namespace
 				j = s.size();
 
 			auto part = trim(s.substr(i, j - i));
+			part = strip_surrounding_quotes(trim(part));
 			if (!part.empty())
 				out.push_back(std::string(part));
 
@@ -148,6 +173,28 @@ namespace
 		return std::string_view(argv[i]);
 	}
 
+	[[nodiscard]] std::optional<std::string> take_inline_line(int& i, int argc, char** argv)
+	{
+		auto v = take_value(i, argc, argv);
+		if (!v)
+			return std::nullopt;
+
+		if (!v->empty() && v->front() == '-')
+			return std::nullopt;
+
+		std::string_view token = *v;
+		std::string cleaned{};
+		cleaned.reserve(token.size());
+		for (char ch : token)
+		{
+			if (ch == '"')
+				continue;
+			cleaned.push_back(ch);
+		}
+
+		return cleaned;
+	}
+
 	[[nodiscard]] std::optional<CliOptions> parse_args(int argc, char** argv)
 	{
 		CliOptions opt{};
@@ -194,11 +241,11 @@ namespace
 
 			if (a == "-i")
 			{
-				auto v = take_value(i, argc, argv);
+				auto v = take_inline_line(i, argc, argv);
 				if (!v)
 					return std::nullopt;
 
-				opt.inline_lines.push_back(std::string(*v));
+				opt.inline_lines.push_back(*v);
 				continue;
 			}
 
@@ -245,18 +292,12 @@ namespace
 			}
 
 			if (!a.empty() && a.front() == '-')
-			{
 				return std::nullopt;
-			}
 
 			if (opt.input.empty())
-			{
 				opt.input = std::string(a);
-			}
 			else
-			{
 				return std::nullopt;
-			}
 		}
 
 		if (opt.input.empty() && !opt.show_help && !opt.show_version)
@@ -342,6 +383,44 @@ int main(int argc, char** argv)
 	yasme::fe::ParserOptions fe_opt{};
 	fe_opt.include_paths = final_includes;
 
+	yasme::fe::Program combined{};
+	if (!opt.inline_lines.empty())
+	{
+		yasme::fe::ParserOptions inline_fe_opt = fe_opt;
+		{
+			namespace fs = std::filesystem;
+			fs::path in_path(sources.name(in_id));
+			auto in_dir = in_path.parent_path();
+			if (!in_dir.empty())
+			{
+				auto dir = in_dir.string();
+				auto& v = inline_fe_opt.include_paths;
+				if (std::find(v.begin(), v.end(), dir) == v.end())
+					v.insert(v.begin(), std::move(dir));
+			}
+		}
+
+		std::string src{};
+		for (auto const& line : opt.inline_lines)
+		{
+			src.append(line);
+			ensure_newline(src);
+		}
+
+		auto inline_id = sources.add_virtual("<inline>", std::move(src));
+		yasme::fe::Parser inline_parser(sources, inline_id, {}, inline_fe_opt);
+		auto inline_res = inline_parser.parse_program();
+
+		if (!inline_res.errors.empty())
+		{
+			emit_parse_errors(diag, inline_res.errors);
+			return 1;
+		}
+
+		for (auto& st : inline_res.program.stmts)
+			combined.stmts.push_back(std::move(st));
+	}
+
 	yasme::fe::Parser parser(sources, in_id, {}, fe_opt);
 	auto parse_res = parser.parse_program();
 
@@ -351,19 +430,21 @@ int main(int argc, char** argv)
 		return 1;
 	}
 
+	for (auto& st : parse_res.program.stmts)
+		combined.stmts.push_back(std::move(st));
+
 	yasme::macro::Expander expander(sources, diag);
-	auto ir_program = expander.expand(parse_res.program);
+	auto ir_program = expander.expand(combined);
 
 	if (diag.error_count() != 0)
 		return 1;
 
-	yasme::Assembler assembler(sources, diag);
+	yasme::Assembler assembler(diag);
 
 	yasme::AssembleOptions asm_opt{};
 	asm_opt.max_passes = opt.max_passes;
 	asm_opt.error_on_unresolved = opt.error_on_unresolved;
 	asm_opt.run_final_postpone = opt.run_final_postpone;
-	asm_opt.inline_lines = opt.inline_lines;
 
 	auto out = assembler.assemble(ir_program, asm_opt);
 

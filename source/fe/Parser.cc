@@ -1,7 +1,10 @@
 #include <cstddef>
 #include <filesystem>
-#include <unordered_map>
+#include <optional>
+#include <string>
+#include <string_view>
 #include <utility>
+#include <vector>
 #include <yasme/fe/Parser.hh>
 #include <yasme/macro/TokenBuffer.hh>
 #include <yasme/macro/TokenSlice.hh>
@@ -11,7 +14,7 @@ namespace yasme::fe
 {
 	namespace fs = std::filesystem;
 
-	[[nodiscard]] std::string unquote_stringlike(std::string_view s)
+	[[nodiscard]] static std::string unquote_stringlike(std::string_view s)
 	{
 		if (s.size() < 2)
 			return std::string(s);
@@ -24,188 +27,19 @@ namespace yasme::fe
 		return std::string(s);
 	}
 
-	[[nodiscard]] bool is_stringlike(lex::TokenKind k) noexcept
+	[[nodiscard]] static bool is_stringlike(lex::TokenKind k) noexcept
 	{
 		return k == lex::TokenKind::string || k == lex::TokenKind::char_literal;
 	}
 
-	struct IncludeCtx
-	{
-		SourceManager* sources{};
-		lex::LexerOptions lex_opt{};
-		ParserOptions opt{};
-		std::vector<std::string> stack{};
-		std::unordered_map<std::string, FileId> cache{};
-		std::vector<ParseError>* errors{};
-	};
-
-	[[nodiscard]] std::string normalize_path(fs::path p)
+	[[nodiscard]] static std::string normalize_path(fs::path p)
 	{
 		std::error_code ec{};
 		auto const canon = fs::weakly_canonical(p, ec);
 		if (!ec)
 			return canon.generic_string();
+
 		return p.lexically_normal().generic_string();
-	}
-
-	[[nodiscard]] std::optional<std::pair<FileId, std::string>>
-	open_include(IncludeCtx& ctx, FileId from_file, std::string_view raw, SourceSpan where)
-	{
-		auto from_name = std::string(ctx.sources->name(from_file));
-		fs::path from_path(from_name);
-		fs::path raw_path(std::string{raw});
-
-		std::vector<fs::path> candidates{};
-		if (raw_path.is_absolute())
-		{
-			candidates.push_back(raw_path);
-		}
-		else
-		{
-			auto parent = from_path.parent_path();
-			if (!parent.empty())
-				candidates.push_back(parent / raw_path);
-
-			for (auto const& inc : ctx.opt.include_paths)
-				candidates.push_back(fs::path(inc) / raw_path);
-
-			candidates.push_back(raw_path);
-		}
-
-		std::string last_err{};
-
-		for (auto const& cand : candidates)
-		{
-			auto key = normalize_path(cand);
-
-			if (auto it = ctx.cache.find(key); it != ctx.cache.end())
-				return std::pair<FileId, std::string>{it->second, key};
-
-			auto res = ctx.sources->open_read(cand.string());
-			if (res.ok())
-			{
-				ctx.cache.emplace(key, res.value());
-				return std::pair<FileId, std::string>{res.value(), key};
-			}
-			last_err = res.err();
-		}
-
-		ParseError e{};
-		e.span = where;
-		e.message = "cannot open include file '" + std::string(raw) + "': " + last_err;
-		ctx.errors->push_back(std::move(e));
-		return std::nullopt;
-	}
-
-	[[nodiscard]] std::vector<lex::Token>
-	expand_includes(IncludeCtx& ctx, FileId file, std::string file_key)
-	{
-		if (ctx.stack.size() > 128)
-		{
-			ParseError e{};
-			e.span = {};
-			e.message = "include nesting is too deep";
-			ctx.errors->push_back(std::move(e));
-			return {};
-		}
-
-		for (auto const& k : ctx.stack)
-		{
-			if (k == file_key)
-			{
-				ParseError e{};
-				e.span = {};
-				e.message = "recursive include of '" + file_key + "'";
-				ctx.errors->push_back(std::move(e));
-				return {};
-			}
-		}
-
-		ctx.stack.push_back(file_key);
-
-		macro::TokenBuffer buf(*ctx.sources, file, ctx.lex_opt);
-		for (auto const& le : buf.errors())
-		{
-			ParseError e{};
-			e.span = le.span;
-			e.message = le.message;
-			ctx.errors->push_back(std::move(e));
-		}
-
-		auto toks = buf.tokens();
-		std::vector<lex::Token> out{};
-		out.reserve(toks.size());
-
-		bool line_start = true;
-
-		for (std::size_t i = 0; i < toks.size(); ++i)
-		{
-			auto const& t = toks[i];
-
-			if (line_start && t.is(lex::TokenKind::kw_include))
-			{
-				auto include_span = t.span;
-
-				auto j = i + 1;
-				if (j >= toks.size() || !is_stringlike(toks[j].kind))
-				{
-					ParseError e{};
-					e.span = include_span;
-					e.message = "expected a quoted path after include";
-					ctx.errors->push_back(std::move(e));
-
-					while (j < toks.size() && !toks[j].is(lex::TokenKind::newline)
-						   && !toks[j].is(lex::TokenKind::eof))
-						++j;
-
-					if (j < toks.size() && toks[j].is(lex::TokenKind::newline))
-						out.push_back(toks[j]);
-
-					i = j;
-					line_start = true;
-					continue;
-				}
-
-				auto const& path_tok = toks[j];
-				auto raw = unquote_stringlike(path_tok.lexeme);
-
-				auto opened = open_include(ctx, file, raw, path_tok.span);
-				if (opened)
-				{
-					auto const [inc_id, inc_key] = *opened;
-					auto inc_tokens = expand_includes(ctx, inc_id, inc_key);
-
-					if (!inc_tokens.empty() && inc_tokens.back().is(lex::TokenKind::eof))
-						inc_tokens.pop_back();
-
-					out.insert(out.end(), inc_tokens.begin(), inc_tokens.end());
-				}
-
-				j += 1;
-				while (j < toks.size() && !toks[j].is(lex::TokenKind::newline)
-					   && !toks[j].is(lex::TokenKind::eof))
-				{
-					ParseError e{};
-					e.span = toks[j].span;
-					e.message = "unexpected token after include path";
-					ctx.errors->push_back(std::move(e));
-					++j;
-				}
-
-				if (j < toks.size() && toks[j].is(lex::TokenKind::newline))
-					out.push_back(toks[j]);
-
-				i = j;
-				line_start = true;
-				continue;
-			}
-
-			out.push_back(t);
-			line_start = t.is(lex::TokenKind::newline);
-		}
-
-		ctx.stack.pop_back();
-		return out;
 	}
 
 	static bool ieq(std::string_view a, std::string_view b) noexcept
@@ -214,10 +48,8 @@ namespace yasme::fe
 			return false;
 
 		for (std::size_t i = 0; i < a.size(); ++i)
-		{
 			if (ascii_tolower(a[i]) != ascii_tolower(b[i]))
 				return false;
-		}
 
 		return true;
 	}
@@ -231,21 +63,18 @@ namespace yasme::fe
 				   FileId file,
 				   lex::LexerOptions lex_opt,
 				   ParserOptions opt)
-		: m_opt(opt)
+		: m_sources(std::addressof(sources)), m_file(file), m_lex_opt(lex_opt),
+		  m_opt(std::move(opt))
 	{
 		m_tokens = std::make_shared<std::vector<lex::Token>>();
 
-		IncludeCtx ctx{};
-		ctx.sources = std::addressof(sources);
-		ctx.lex_opt = lex_opt;
-		ctx.opt = opt;
-		ctx.errors = std::addressof(m_errors);
+		macro::TokenBuffer buf(sources, file, lex_opt);
+		for (auto const& le : buf.errors())
+			m_errors.push_back(ParseError{le.span, le.message});
 
-		auto root_name = std::string(sources.name(file));
-		auto root_key = normalize_path(fs::path(root_name));
-
-		auto flat = expand_includes(ctx, file, root_key);
-		*m_tokens = std::move(flat);
+		auto tokens = buf.tokens();
+		for (auto token : tokens)
+			m_tokens->push_back(token);
 
 		m_index = 0;
 	}
@@ -411,14 +240,7 @@ namespace yasme::fe
 			return parse_stmt_continue();
 
 		if (cur().is(lex::TokenKind::kw_macro))
-		{
-			if (in_macro)
-			{
-				add_error(cur().span, "macro definitions cannot be nested");
-				return nullptr;
-			}
 			return parse_stmt_macro_def();
-		}
 
 		if (cur().is(lex::TokenKind::kw_local))
 		{
@@ -449,6 +271,9 @@ namespace yasme::fe
 			}
 			return parse_stmt_match();
 		}
+
+		if (cur().is(lex::TokenKind::kw_include))
+			return parse_stmt_include();
 
 		if (cur().is(lex::TokenKind::kw_org))
 			return parse_stmt_org();
@@ -490,6 +315,89 @@ namespace yasme::fe
 		add_error(cur().span, "unexpected token at start of statement");
 		advance();
 		return nullptr;
+	}
+
+	StmtPtr Parser::parse_stmt_include()
+	{
+		auto kw = consume();
+
+		if (!is_stringlike(cur().kind))
+		{
+			add_error(cur().span, "expected a quoted path after include");
+			recover_to_newline();
+			return nullptr;
+		}
+
+		auto path_tok = consume();
+		auto raw = unquote_stringlike(path_tok.lexeme);
+
+		auto from_name = std::string(m_sources->name(m_file));
+		fs::path from_path(from_name);
+		fs::path raw_path(raw);
+
+		std::vector<fs::path> candidates{};
+		if (raw_path.is_absolute())
+		{
+			candidates.push_back(raw_path);
+		}
+		else
+		{
+			auto parent = from_path.parent_path();
+			if (!parent.empty())
+				candidates.push_back(parent / raw_path);
+
+			for (auto const& inc : m_opt.include_paths)
+				candidates.push_back(fs::path(inc) / raw_path);
+
+			candidates.push_back(raw_path);
+		}
+
+		FileId inc_file{};
+		std::string inc_key{};
+		std::string last_err{};
+
+		for (auto const& cand : candidates)
+		{
+			auto key = normalize_path(cand);
+
+			if (auto it = m_include_cache.find(key); it != m_include_cache.end())
+			{
+				inc_file = it->second;
+				inc_key = std::move(key);
+				last_err.clear();
+				break;
+			}
+
+			auto res = m_sources->open_read(cand.string());
+			if (res.ok())
+			{
+				inc_file = res.value();
+				inc_key = std::move(key);
+				m_include_cache.emplace(inc_key, inc_file);
+				last_err.clear();
+				break;
+			}
+
+			last_err = res.err();
+		}
+
+		if (inc_key.empty())
+			add_error(path_tok.span, "cannot open include file '" + raw + "': " + last_err);
+
+		SourceSpan last_span = path_tok.span;
+		while (!cur().is(lex::TokenKind::newline) && !cur().is(lex::TokenKind::eof))
+		{
+			add_error(cur().span, "unexpected token after include path");
+			last_span = cur().span;
+			advance();
+		}
+
+		StmtInclude st{};
+		st.span = merge_spans(kw.span, last_span);
+		st.raw_path = std::move(raw);
+		st.file = inc_file;
+		st.normalized_key = std::move(inc_key);
+		return std::make_unique<Stmt>(Stmt(std::move(st)));
 	}
 
 	StmtPtr Parser::parse_stmt_macro_def()
@@ -558,9 +466,7 @@ namespace yasme::fe
 				saw_tokens = true;
 
 				if (!cur().is(lex::TokenKind::newline) && !cur().is(lex::TokenKind::eof))
-				{
 					add_error(cur().span, "'tokens' parameter must be last in the signature");
-				}
 			}
 
 			MacroParam param{};
@@ -624,7 +530,6 @@ namespace yasme::fe
 			int paren = 0;
 			int bracket = 0;
 			int brace = 0;
-			bool saw_token = false;
 
 			while (!cur().is(lex::TokenKind::newline) && !cur().is(lex::TokenKind::eof))
 			{
@@ -652,15 +557,13 @@ namespace yasme::fe
 
 					advance();
 					arg_start = m_index;
-					saw_token = false;
 					continue;
 				}
 
-				saw_token = true;
 				advance();
 			}
 
-			if (arg_start != m_index || saw_token)
+			if (arg_start != m_index)
 				args.push_back(slice_from_indices(arg_start, m_index));
 		}
 
@@ -752,76 +655,111 @@ namespace yasme::fe
 		}
 
 		auto name_tok = consume();
+		auto tokens_name = std::string(name_tok.lexeme);
 
 		if (!expect(lex::TokenKind::comma, "expected ',' after match parameter"))
 			return nullptr;
 
-		auto pattern_start = m_index;
-		while (!cur().is(lex::TokenKind::newline) && !cur().is(lex::TokenKind::eof))
-			advance();
+		auto read_pattern = [this]() -> macro::TokenSlice {
+			auto pattern_start = m_index;
+			while (!cur().is(lex::TokenKind::newline) && !cur().is(lex::TokenKind::eof))
+				advance();
 
-		if (pattern_start == m_index)
-			add_error(cur().span, "expected match pattern");
+			if (pattern_start == m_index)
+				add_error(cur().span, "expected match pattern");
 
-		auto pattern = slice_from_indices(pattern_start, m_index);
+			return slice_from_indices(pattern_start, m_index);
+		};
 
+		auto parse_body_until =
+			[this](std::vector<StmtPtr>& dst, bool stop_on_else, lex::TokenKind end_kw_which) {
+				for (;;)
+				{
+					skip_newlines();
+
+					if (stop_on_else && cur().is(lex::TokenKind::kw_else))
+						break;
+
+					if (cur().is(lex::TokenKind::kw_end) && next().is(end_kw_which))
+						break;
+
+					if (cur().is(lex::TokenKind::eof))
+					{
+						add_error(cur().span, "unexpected end of file in block");
+						break;
+					}
+
+					auto st = parse_stmt(true);
+					if (st)
+						dst.push_back(std::move(st));
+					else
+						recover_to_newline();
+				}
+			};
+
+		std::vector<macro::TokenSlice> patterns{};
+		std::vector<std::vector<StmtPtr>> bodies{};
+
+		auto first_pattern = read_pattern();
 		skip_newlines();
 
-		std::vector<StmtPtr> on_match{};
-		std::vector<StmtPtr> on_else{};
-		bool has_else = false;
+		std::vector<StmtPtr> first_body{};
+		parse_body_until(first_body, true, lex::TokenKind::kw_match);
 
-		for (;;)
+		patterns.push_back(first_pattern);
+		bodies.push_back(std::move(first_body));
+
+		bool has_final_else = false;
+		std::vector<StmtPtr> final_else_body{};
+
+		while (cur().is(lex::TokenKind::kw_else))
 		{
-			skip_newlines();
+			consume();
 
-			if (cur().is(lex::TokenKind::kw_else))
-				break;
-
-			if (cur().is(lex::TokenKind::kw_end) && next().is(lex::TokenKind::kw_match))
-				break;
-
-			if (cur().is(lex::TokenKind::eof))
+			if (cur().is(lex::TokenKind::kw_match))
 			{
-				add_error(cur().span, "unexpected end of file in 'match' block");
-				break;
-			}
+				consume();
 
-			auto st = parse_stmt(true);
-			if (st)
-				on_match.push_back(std::move(st));
-			else
-				recover_to_newline();
-		}
-
-		if (cur().is(lex::TokenKind::kw_else))
-		{
-			has_else = true;
-			advance();
-			if (!cur().is(lex::TokenKind::newline) && !cur().is(lex::TokenKind::eof))
-				recover_to_newline();
-
-			skip_newlines();
-
-			for (;;)
-			{
-				skip_newlines();
-
-				if (cur().is(lex::TokenKind::kw_end) && next().is(lex::TokenKind::kw_match))
-					break;
-
-				if (cur().is(lex::TokenKind::eof))
+				if (!cur().is(lex::TokenKind::identifier))
 				{
-					add_error(cur().span, "unexpected end of file in 'match' block");
+					add_error(cur().span, "expected tokens parameter name after 'else match'");
+					recover_to_newline();
 					break;
 				}
 
+				auto chained_name_tok = consume();
+				if (!ieq(chained_name_tok.lexeme, tokens_name))
+					add_error(chained_name_tok.span,
+							  "tokens name in 'else match' differs from initial 'match'");
+
+				if (!expect(lex::TokenKind::comma, "expected ',' after match parameter"))
+					return nullptr;
+
+				auto pat = read_pattern();
+				skip_newlines();
+
+				std::vector<StmtPtr> body{};
+				parse_body_until(body, true, lex::TokenKind::kw_match);
+
+				patterns.push_back(pat);
+				bodies.push_back(std::move(body));
+				continue;
+			}
+
+			has_final_else = true;
+
+			if (!cur().is(lex::TokenKind::newline) && !cur().is(lex::TokenKind::eof))
+			{
 				auto st = parse_stmt(true);
 				if (st)
-					on_else.push_back(std::move(st));
+					final_else_body.push_back(std::move(st));
 				else
 					recover_to_newline();
 			}
+
+			skip_newlines();
+			parse_body_until(final_else_body, false, lex::TokenKind::kw_match);
+			break;
 		}
 
 		SourceSpan end_span = kw.span;
@@ -832,15 +770,36 @@ namespace yasme::fe
 			end_span = merge_spans(end_kw.span, which.span);
 		}
 
-		StmtMatch st{};
-		st.span = merge_spans(kw.span, end_span);
-		st.tokens_name = std::string(name_tok.lexeme);
-		st.pattern = pattern;
-		st.on_match = std::move(on_match);
-		st.on_else = std::move(on_else);
-		st.has_else = has_else;
+		auto full_span = merge_spans(kw.span, end_span);
 
-		return std::make_unique<Stmt>(Stmt(std::move(st)));
+		StmtPtr nested{};
+		for (std::size_t i = patterns.size(); i > 0; --i)
+		{
+			auto idx = i - 1;
+
+			StmtMatch st{};
+			st.span = full_span;
+			st.tokens_name = tokens_name;
+			st.pattern = patterns[idx];
+			st.on_match = std::move(bodies[idx]);
+
+			if (!nested)
+			{
+				st.has_else = has_final_else;
+				st.on_else = std::move(final_else_body);
+			}
+			else
+			{
+				st.has_else = true;
+				std::vector<StmtPtr> else_vec{};
+				else_vec.push_back(std::move(nested));
+				st.on_else = std::move(else_vec);
+			}
+
+			nested = std::make_unique<Stmt>(Stmt(std::move(st)));
+		}
+
+		return nested;
 	}
 
 	StmtPtr Parser::parse_stmt_org()
@@ -849,7 +808,7 @@ namespace yasme::fe
 		auto addr = parse_expr();
 
 		ir::StmtOrg s{};
-		s.span = kw.span;
+		s.span = merge_spans(kw.span, addr.span);
 		s.address = std::move(addr);
 
 		return std::make_unique<Stmt>(
@@ -864,7 +823,7 @@ namespace yasme::fe
 		if (accept(lex::TokenKind::colon))
 		{
 			ir::StmtLabel s{};
-			s.span = merge_spans(name_tok.span, name_tok.span);
+			s.span = name_tok.span;
 			s.name = std::move(name);
 			return std::make_unique<Stmt>(
 				Stmt(StmtNormal{std::make_unique<ir::Stmt>(ir::Stmt(std::move(s)))}));
@@ -965,7 +924,7 @@ namespace yasme::fe
 		}
 
 		ir::StmtEmitData s{};
-		s.span = kw.span;
+		s.span = items.empty() ? kw.span : merge_spans(kw.span, items.back().span);
 		s.unit = unit;
 		s.items = std::move(items);
 
@@ -1038,14 +997,12 @@ namespace yasme::fe
 		auto kw = consume();
 
 		std::optional<ir::Expr> name_expr{};
-
 		if (!cur().is(lex::TokenKind::newline) && !cur().is(lex::TokenKind::eof))
 			name_expr = parse_expr();
 
 		skip_newlines();
 
 		std::vector<StmtPtr> body{};
-
 		for (;;)
 		{
 			skip_newlines();
@@ -1066,15 +1023,65 @@ namespace yasme::fe
 				recover_to_newline();
 		}
 
+		SourceSpan end_span = kw.span;
 		if (cur().is(lex::TokenKind::kw_end) && next().is(lex::TokenKind::kw_virtual))
 		{
-			consume();
-			consume();
+			auto end_kw = consume();
+			auto which = consume();
+			end_span = merge_spans(end_kw.span, which.span);
 		}
 
 		StmtVirtual s{};
-		s.span = kw.span;
+		s.span = merge_spans(kw.span, end_span);
 		s.name_expr = std::move(name_expr);
+		s.body = std::move(body);
+
+		return std::make_unique<Stmt>(Stmt(std::move(s)));
+	}
+
+	StmtPtr Parser::parse_stmt_postpone(bool in_macro)
+	{
+		auto kw = consume();
+
+		ir::PostponeMode mode = ir::PostponeMode::at_end_each_pass;
+		if (accept(lex::TokenKind::bang))
+			mode = ir::PostponeMode::after_stable;
+
+		skip_newlines();
+
+		std::vector<StmtPtr> body{};
+
+		for (;;)
+		{
+			skip_newlines();
+
+			if (cur().is(lex::TokenKind::kw_end) && next().is(lex::TokenKind::kw_postpone))
+				break;
+
+			if (cur().is(lex::TokenKind::eof))
+			{
+				add_error(cur().span, "unexpected end of file in 'postpone' block");
+				break;
+			}
+
+			auto st = parse_stmt(in_macro);
+			if (st)
+				body.push_back(std::move(st));
+			else
+				recover_to_newline();
+		}
+
+		SourceSpan end_span = kw.span;
+		if (cur().is(lex::TokenKind::kw_end) && next().is(lex::TokenKind::kw_postpone))
+		{
+			auto end_kw = consume();
+			auto which = consume();
+			end_span = merge_spans(end_kw.span, which.span);
+		}
+
+		StmtPostpone s{};
+		s.span = merge_spans(kw.span, end_span);
+		s.mode = mode;
 		s.body = std::move(body);
 
 		return std::make_unique<Stmt>(Stmt(std::move(s)));
@@ -1084,44 +1091,14 @@ namespace yasme::fe
 	{
 		auto kw = consume();
 
-		auto cond = parse_expr();
-		skip_newlines();
-
-		std::vector<StmtPtr> then_body{};
-		std::vector<StmtPtr> else_body{};
-		bool has_else = false;
-
-		for (;;)
-		{
-			skip_newlines();
-
-			if (cur().is(lex::TokenKind::kw_else))
-				break;
-			if (cur().is(lex::TokenKind::kw_end) && next().is(lex::TokenKind::kw_if))
-				break;
-
-			if (cur().is(lex::TokenKind::eof))
-			{
-				add_error(cur().span, "unexpected end of file in 'if' block");
-				break;
-			}
-
-			auto st = parse_stmt(in_macro);
-			if (st)
-				then_body.push_back(std::move(st));
-			else
-				recover_to_newline();
-		}
-
-		if (cur().is(lex::TokenKind::kw_else))
-		{
-			consume();
-			has_else = true;
-			skip_newlines();
-
+		auto parse_then_body_until = [this, in_macro](std::vector<StmtPtr>& dst,
+													  bool stop_on_else) {
 			for (;;)
 			{
 				skip_newlines();
+
+				if (stop_on_else && cur().is(lex::TokenKind::kw_else))
+					break;
 
 				if (cur().is(lex::TokenKind::kw_end) && next().is(lex::TokenKind::kw_if))
 					break;
@@ -1134,44 +1111,95 @@ namespace yasme::fe
 
 				auto st = parse_stmt(in_macro);
 				if (st)
-					else_body.push_back(std::move(st));
+					dst.push_back(std::move(st));
 				else
 					recover_to_newline();
 			}
+		};
+
+		std::vector<ir::Expr> conds{};
+		std::vector<std::vector<StmtPtr>> thens{};
+
+		conds.push_back(parse_expr());
+		skip_newlines();
+
+		std::vector<StmtPtr> first_then{};
+		parse_then_body_until(first_then, true);
+		thens.push_back(std::move(first_then));
+
+		bool has_final_else = false;
+		std::vector<StmtPtr> final_else_body{};
+
+		while (cur().is(lex::TokenKind::kw_else))
+		{
+			consume();
+
+			if (cur().is(lex::TokenKind::kw_if))
+			{
+				consume();
+
+				conds.push_back(parse_expr());
+				skip_newlines();
+
+				std::vector<StmtPtr> then_body{};
+				parse_then_body_until(then_body, true);
+				thens.push_back(std::move(then_body));
+				continue;
+			}
+
+			has_final_else = true;
+
+			if (!cur().is(lex::TokenKind::newline) && !cur().is(lex::TokenKind::eof))
+			{
+				auto st = parse_stmt(in_macro);
+				if (st)
+					final_else_body.push_back(std::move(st));
+				else
+					recover_to_newline();
+			}
+
+			skip_newlines();
+			parse_then_body_until(final_else_body, false);
+			break;
 		}
 
+		SourceSpan end_span = kw.span;
 		if (cur().is(lex::TokenKind::kw_end) && next().is(lex::TokenKind::kw_if))
 		{
-			consume();
-			consume();
+			auto end_kw = consume();
+			auto which = consume();
+			end_span = merge_spans(end_kw.span, which.span);
 		}
 
-		ir::StmtIf s{};
-		s.span = kw.span;
-		s.cond = std::move(cond);
+		auto full_span = merge_spans(kw.span, end_span);
 
-		for (auto& st : then_body)
+		StmtPtr nested{};
+		for (std::size_t i = conds.size(); i > 0; --i)
 		{
-			if (auto* n = std::get_if<StmtNormal>(&st->node))
-				s.then_body.push_back(std::move(n->stmt));
+			auto idx = i - 1;
+
+			StmtIf s{};
+			s.span = full_span;
+			s.cond = std::move(conds[idx]);
+			s.then_body = std::move(thens[idx]);
+
+			if (!nested)
+			{
+				s.has_else = has_final_else;
+				s.else_body = std::move(final_else_body);
+			}
 			else
-				add_error(st->node.index() == 0 ? kw.span : kw.span,
-						  "unsupported statement kind inside 'if' (internal)");
+			{
+				s.has_else = true;
+				std::vector<StmtPtr> else_vec{};
+				else_vec.push_back(std::move(nested));
+				s.else_body = std::move(else_vec);
+			}
+
+			nested = std::make_unique<Stmt>(Stmt(std::move(s)));
 		}
 
-		for (auto& st : else_body)
-		{
-			if (auto* n = std::get_if<StmtNormal>(&st->node))
-				s.else_body.push_back(std::move(n->stmt));
-			else
-				add_error(st->node.index() == 0 ? kw.span : kw.span,
-						  "unsupported statement kind inside 'else' (internal)");
-		}
-
-		s.has_else = has_else;
-
-		return std::make_unique<Stmt>(
-			Stmt(StmtNormal{std::make_unique<ir::Stmt>(ir::Stmt(std::move(s)))}));
+		return nested;
 	}
 
 	StmtPtr Parser::parse_stmt_repeat(bool in_macro)
@@ -1201,26 +1229,20 @@ namespace yasme::fe
 				recover_to_newline();
 		}
 
+		SourceSpan end_span = kw.span;
 		if (cur().is(lex::TokenKind::kw_end) && next().is(lex::TokenKind::kw_repeat))
 		{
-			consume();
-			consume();
+			auto end_kw = consume();
+			auto which = consume();
+			end_span = merge_spans(end_kw.span, which.span);
 		}
 
-		ir::StmtRepeat s{};
-		s.span = kw.span;
+		StmtRepeat s{};
+		s.span = merge_spans(kw.span, end_span);
 		s.count = std::move(count);
+		s.body = std::move(body);
 
-		for (auto& st : body)
-		{
-			if (auto* n = std::get_if<StmtNormal>(&st->node))
-				s.body.push_back(std::move(n->stmt));
-			else
-				add_error(kw.span, "unsupported statement kind inside 'repeat' (internal)");
-		}
-
-		return std::make_unique<Stmt>(
-			Stmt(StmtNormal{std::make_unique<ir::Stmt>(ir::Stmt(std::move(s)))}));
+		return std::make_unique<Stmt>(Stmt(std::move(s)));
 	}
 
 	StmtPtr Parser::parse_stmt_while(bool in_macro)
@@ -1250,26 +1272,20 @@ namespace yasme::fe
 				recover_to_newline();
 		}
 
+		SourceSpan end_span = kw.span;
 		if (cur().is(lex::TokenKind::kw_end) && next().is(lex::TokenKind::kw_while))
 		{
-			consume();
-			consume();
+			auto end_kw = consume();
+			auto which = consume();
+			end_span = merge_spans(end_kw.span, which.span);
 		}
 
-		ir::StmtWhile s{};
-		s.span = kw.span;
+		StmtWhile s{};
+		s.span = merge_spans(kw.span, end_span);
 		s.cond = std::move(cond);
+		s.body = std::move(body);
 
-		for (auto& st : body)
-		{
-			if (auto* n = std::get_if<StmtNormal>(&st->node))
-				s.body.push_back(std::move(n->stmt));
-			else
-				add_error(kw.span, "unsupported statement kind inside 'while' (internal)");
-		}
-
-		return std::make_unique<Stmt>(
-			Stmt(StmtNormal{std::make_unique<ir::Stmt>(ir::Stmt(std::move(s)))}));
+		return std::make_unique<Stmt>(Stmt(std::move(s)));
 	}
 
 	StmtPtr Parser::parse_stmt_for(bool in_macro)
@@ -1312,27 +1328,21 @@ namespace yasme::fe
 					recover_to_newline();
 			}
 
+			SourceSpan end_span = kw.span;
 			if (cur().is(lex::TokenKind::kw_end) && next().is(lex::TokenKind::kw_for))
 			{
-				consume();
-				consume();
+				auto end_kw = consume();
+				auto which = consume();
+				end_span = merge_spans(end_kw.span, which.span);
 			}
 
-			ir::StmtForChars s{};
-			s.span = kw.span;
+			StmtForChars s{};
+			s.span = merge_spans(kw.span, end_span);
 			s.var = std::move(var);
 			s.str = std::move(str);
+			s.body = std::move(body);
 
-			for (auto& st : body)
-			{
-				if (auto* n = std::get_if<StmtNormal>(&st->node))
-					s.body.push_back(std::move(n->stmt));
-				else
-					add_error(kw.span, "unsupported statement kind inside 'for' (internal)");
-			}
-
-			return std::make_unique<Stmt>(
-				Stmt(StmtNormal{std::make_unique<ir::Stmt>(ir::Stmt(std::move(s)))}));
+			return std::make_unique<Stmt>(Stmt(std::move(s)));
 		}
 
 		if (!accept(lex::TokenKind::eq))
@@ -1353,7 +1363,17 @@ namespace yasme::fe
 
 		std::optional<ir::Expr> step{};
 		if (accept(lex::TokenKind::comma))
-			step = parse_expr();
+		{
+			if (cur().is(lex::TokenKind::newline) || cur().is(lex::TokenKind::eof))
+			{
+				if (!m_opt.allow_trailing_commas)
+					add_error(cur().span, "trailing comma not allowed here");
+			}
+			else
+			{
+				step = parse_expr();
+			}
+		}
 
 		skip_newlines();
 
@@ -1378,29 +1398,23 @@ namespace yasme::fe
 				recover_to_newline();
 		}
 
+		SourceSpan end_span = kw.span;
 		if (cur().is(lex::TokenKind::kw_end) && next().is(lex::TokenKind::kw_for))
 		{
-			consume();
-			consume();
+			auto end_kw = consume();
+			auto which = consume();
+			end_span = merge_spans(end_kw.span, which.span);
 		}
 
-		ir::StmtForNumeric s{};
-		s.span = kw.span;
+		StmtForNumeric s{};
+		s.span = merge_spans(kw.span, end_span);
 		s.var = std::move(var);
 		s.start = std::move(start);
 		s.end = std::move(end);
 		s.step = std::move(step);
+		s.body = std::move(body);
 
-		for (auto& st : body)
-		{
-			if (auto* n = std::get_if<StmtNormal>(&st->node))
-				s.body.push_back(std::move(n->stmt));
-			else
-				add_error(kw.span, "unsupported statement kind inside 'for' (internal)");
-		}
-
-		return std::make_unique<Stmt>(
-			Stmt(StmtNormal{std::make_unique<ir::Stmt>(ir::Stmt(std::move(s)))}));
+		return std::make_unique<Stmt>(Stmt(std::move(s)));
 	}
 
 	StmtPtr Parser::parse_stmt_break()
@@ -1419,52 +1433,6 @@ namespace yasme::fe
 		s.span = kw.span;
 		return std::make_unique<Stmt>(
 			Stmt(StmtNormal{std::make_unique<ir::Stmt>(ir::Stmt(std::move(s)))}));
-	}
-
-	StmtPtr Parser::parse_stmt_postpone(bool in_macro)
-	{
-		auto kw = consume();
-
-		ir::PostponeMode mode = ir::PostponeMode::at_end_each_pass;
-		if (accept(lex::TokenKind::bang))
-			mode = ir::PostponeMode::after_stable;
-
-		skip_newlines();
-
-		std::vector<StmtPtr> body{};
-
-		for (;;)
-		{
-			skip_newlines();
-
-			if (cur().is(lex::TokenKind::kw_end) && next().is(lex::TokenKind::kw_postpone))
-				break;
-
-			if (cur().is(lex::TokenKind::eof))
-			{
-				add_error(cur().span, "unexpected end of file in 'postpone' block");
-				break;
-			}
-
-			auto st = parse_stmt(in_macro);
-			if (st)
-				body.push_back(std::move(st));
-			else
-				recover_to_newline();
-		}
-
-		if (cur().is(lex::TokenKind::kw_end) && next().is(lex::TokenKind::kw_postpone))
-		{
-			consume();
-			consume();
-		}
-
-		StmtPostpone s{};
-		s.span = kw.span;
-		s.mode = mode;
-		s.body = std::move(body);
-
-		return std::make_unique<Stmt>(Stmt(std::move(s)));
 	}
 
 	StmtPtr Parser::parse_stmt_unexpected_end()
