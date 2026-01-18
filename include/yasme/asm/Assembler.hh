@@ -150,6 +150,7 @@ namespace yasme
 		[[nodiscard]] Flow apply_while(PassState& st, ir::StmtWhile const& s);
 		[[nodiscard]] Flow apply_for_numeric(PassState& st, ir::StmtForNumeric const& s);
 		[[nodiscard]] Flow apply_for_chars(PassState& st, ir::StmtForChars const& s);
+		void apply_error(PassState& st, ir::StmtError const& s);
 
 		[[nodiscard]] Value eval_value(PassState& st, ir::Expr const& e);
 		[[nodiscard]] std::optional<std::string> eval_name(PassState& st, ir::Expr const& e);
@@ -164,6 +165,7 @@ namespace yasme
 		void emit_u64(PassState& st, std::uint64_t v);
 
 		[[nodiscard]] static std::size_t fingerprint(PassState const& st);
+		void emit_diag(PassState& st, Diagnostic d);
 
 		Diagnostics* m_diag{};
 	};

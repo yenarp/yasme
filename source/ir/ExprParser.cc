@@ -185,47 +185,46 @@ namespace yasme::ir
 
 	Expr ExprParser::parse_unary()
 	{
-		if (accept(lex::TokenKind::plus))
+		if (is(lex::TokenKind::plus))
 		{
+			auto op = consume();
 			auto rhs = parse_unary();
-			auto s = merge_spans(rhs.span, rhs.span);
-			return make_unary(s, UnaryOp::plus, std::move(rhs));
+			return make_unary(merge_spans(op.span, rhs.span), UnaryOp::plus, std::move(rhs));
 		}
 
-		if (accept(lex::TokenKind::minus))
+		if (is(lex::TokenKind::minus))
 		{
+			auto op = consume();
 			auto rhs = parse_unary();
-			auto s = merge_spans(rhs.span, rhs.span);
-			return make_unary(s, UnaryOp::minus, std::move(rhs));
+			return make_unary(merge_spans(op.span, rhs.span), UnaryOp::minus, std::move(rhs));
 		}
 
-		if (accept(lex::TokenKind::tilde))
+		if (is(lex::TokenKind::tilde))
 		{
+			auto op = consume();
 			auto rhs = parse_unary();
-			auto s = merge_spans(rhs.span, rhs.span);
-			return make_unary(s, UnaryOp::bit_not, std::move(rhs));
+			return make_unary(merge_spans(op.span, rhs.span), UnaryOp::bit_not, std::move(rhs));
 		}
 
-		if (accept(lex::TokenKind::bang))
+		if (is(lex::TokenKind::bang))
 		{
+			auto op = consume();
 			auto rhs = parse_unary();
-			auto s = merge_spans(rhs.span, rhs.span);
-			return make_unary(s, UnaryOp::log_not, std::move(rhs));
+			return make_unary(merge_spans(op.span, rhs.span), UnaryOp::log_not, std::move(rhs));
 		}
 
-		if (accept(lex::TokenKind::at))
+		if (is(lex::TokenKind::at))
 		{
-			auto at_span = m_cur().span;
+			auto at = consume();
 
-			if (accept(lex::TokenKind::dollar))
+			if (is(lex::TokenKind::dollar))
 			{
-				auto s = merge_spans(at_span, m_cur().span);
-				return make_builtin(s, BuiltinKind::stream_offset);
+				auto dl = consume();
+				return make_builtin(merge_spans(at.span, dl.span), BuiltinKind::stream_offset);
 			}
 
 			auto rhs = parse_unary();
-			auto s = merge_spans(at_span, rhs.span);
-			return make_unary(s, UnaryOp::at, std::move(rhs));
+			return make_unary(merge_spans(at.span, rhs.span), UnaryOp::at, std::move(rhs));
 		}
 
 		return parse_primary();
@@ -251,10 +250,10 @@ namespace yasme::ir
 			return make_ident(t);
 		}
 
-		if (accept(lex::TokenKind::dollar))
+		if (is(lex::TokenKind::dollar))
 		{
-			auto s = m_cur().span;
-			return make_builtin(s, BuiltinKind::dollar_address);
+			auto dl = consume();
+			return make_builtin(dl.span, BuiltinKind::dollar_address);
 		}
 
 		if (accept(lex::TokenKind::lparen))

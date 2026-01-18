@@ -182,6 +182,30 @@ namespace yasme::ir
 		SourceSpan span{};
 	};
 
+	enum class DiagKind
+	{
+		note,
+		help,
+		suggestion,
+		reference,
+	};
+
+	struct DiagItem
+	{
+		SourceSpan span{};
+		DiagKind kind{DiagKind::note};
+		Expr message{};
+		std::optional<SourceSpan> label_span{};
+	};
+
+	struct StmtError
+	{
+		SourceSpan span{};
+		SourceSpan primary{};
+		Expr message{};
+		std::vector<DiagItem> items{};
+	};
+
 	struct StmtLabel
 	{
 		SourceSpan span{};
@@ -254,6 +278,7 @@ namespace yasme::ir
 								  StmtForChars,
 								  StmtBreak,
 								  StmtContinue,
+								  StmtError,
 								  StmtEnd>;
 
 		Node node{};

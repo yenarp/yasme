@@ -1,2 +1,6 @@
 - [X] Add a way to trigger an error in macro expansion.
-- [ ] Clean-up the billions of hacks that RunYasmeCliCases.cmake has undergone during the process of debugging.
+- [X] Allow token parameter to be passed into token parameter.
+- [X] Fix macro local 'x' used before assignment error when assigned via a ref. 
+- [X] Make token parameters be usable directly in an expression and just perform unchecked substitution.
+- [ ] Make `eval` work like a reverse match so user can supply a custom pattern and not just eval token-list variables.
+- [ ] Add `patch`

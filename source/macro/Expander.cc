@@ -1,3 +1,4 @@
+#include <limits>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -69,6 +70,7 @@ namespace yasme::macro
 			std::unordered_map<std::string, MacroValue> values{};
 			std::unordered_set<std::string> locals{};
 			std::unordered_set<std::string> refs{};
+			std::unordered_map<std::string, MacroValue> shadowed_locals{};
 		};
 
 		struct CallFrame
@@ -123,10 +125,16 @@ namespace yasme::macro
 
 		[[nodiscard]] ir::Program expand(fe::Program const& program)
 		{
+			m_abort_depth = 0;
+			m_return_depth = 0;
+			m_loop_depth = 0;
+
 			m_macros.clear();
 			m_call_stack.clear();
 			m_include_stack.clear();
 			m_include_programs.clear();
+			m_tokens_subst_stack.clear();
+			m_call_loop_base_stack.clear();
 
 			for (auto const& st : program.stmts)
 				collect_macros(*st);
@@ -173,6 +181,81 @@ namespace yasme::macro
 			if (!m_include_stack.empty())
 				m_include_stack.pop_back();
 		}
+
+		[[nodiscard]] bool push_tokens_subst(std::string_view name, SourceSpan use_span)
+		{
+			for (auto const& n :
+				 m_tokens_subst_stack) // TODO key by (env pointer, name) to prevent schizo when nesting macros
+			{
+				if (n == name)
+				{
+					emit_error(use_span,
+							   "recursive tokens substitution of '" + std::string(name) + "'");
+					return false;
+				}
+			}
+			m_tokens_subst_stack.push_back(std::string(name));
+			return true;
+		}
+
+		void pop_tokens_subst() noexcept
+		{
+			if (!m_tokens_subst_stack.empty())
+				m_tokens_subst_stack.pop_back();
+		}
+
+		struct TokensSubstGuard
+		{
+			ExpanderImpl* self{};
+			bool active{};
+
+			TokensSubstGuard(ExpanderImpl* s, std::string_view name, SourceSpan use_span)
+				: self(s), active(s && s->push_tokens_subst(name, use_span))
+			{
+			}
+
+			~TokensSubstGuard()
+			{
+				if (self && active)
+					self->pop_tokens_subst();
+			}
+		};
+
+		[[nodiscard]] bool aborting_current_macro(MacroEnv const* env) const noexcept
+		{
+			if (!env)
+				return false;
+
+			auto const depth = m_call_stack.size();
+			return (m_abort_depth != 0 && m_abort_depth == depth)
+				   || (m_return_depth != 0 && m_return_depth == depth);
+		}
+
+		[[nodiscard]] std::size_t current_macro_loop_base(MacroEnv const* env) const noexcept
+		{
+			if (!env)
+				return 0;
+
+			if (m_call_loop_base_stack.empty())
+				return 0;
+
+			return m_call_loop_base_stack.back();
+		}
+
+		struct LoopDepthGuard
+		{
+			ExpanderImpl* self{};
+			explicit LoopDepthGuard(ExpanderImpl* s) : self(s)
+			{
+				if (self)
+					++self->m_loop_depth;
+			}
+			~LoopDepthGuard()
+			{
+				if (self)
+					--self->m_loop_depth;
+			}
+		};
 
 		[[nodiscard]] fe::Program const* load_include_program(fe::StmtInclude const& node)
 		{
@@ -293,11 +376,52 @@ namespace yasme::macro
 			}
 
 			m_call_stack.push_back(CallFrame{std::string(name), call_span, def_span});
+			m_call_loop_base_stack.push_back(m_loop_depth);
 			return true;
+		}
+
+		[[nodiscard]] ir::DiagKind to_ir_diag_kind(fe::DiagItemKind k) const noexcept
+		{
+			switch (k)
+			{
+				case fe::DiagItemKind::note:
+					return ir::DiagKind::note;
+				case fe::DiagItemKind::help:
+					return ir::DiagKind::help;
+				case fe::DiagItemKind::suggestion:
+					return ir::DiagKind::suggestion;
+				case fe::DiagItemKind::reference:
+					return ir::DiagKind::reference;
+			}
+			return ir::DiagKind::note;
+		}
+
+		[[nodiscard]] ir::Expr make_string_expr(SourceSpan sp, std::string text) const
+		{
+			return ir::Expr(sp, ir::ExprStr{std::move(text)});
+		}
+
+		void append_call_stack_context(ir::StmtError& e) const
+		{
+			for (auto const& frame : m_call_stack)
+			{
+				if (frame.span.id == 0)
+					continue;
+
+				ir::DiagItem it{};
+				it.span = frame.span;
+				it.kind = ir::DiagKind::reference;
+				it.label_span = frame.span;
+				it.message =
+					make_string_expr(frame.span, "expanded from macro '" + frame.name + "'");
+				e.items.push_back(std::move(it));
+			}
 		}
 
 		void pop_call() noexcept
 		{
+			if (!m_call_loop_base_stack.empty())
+				m_call_loop_base_stack.pop_back();
 			if (!m_call_stack.empty())
 				m_call_stack.pop_back();
 		}
@@ -334,6 +458,30 @@ namespace yasme::macro
 			return ir::Expr{};
 		}
 
+		[[nodiscard]] MacroValue const* lookup_local_value(MacroEnv const& env,
+														   std::string const& name) const noexcept
+		{
+			if (auto it = env.shadowed_locals.find(name); it != env.shadowed_locals.end())
+				return std::addressof(it->second);
+
+			if (auto it = env.values.find(name); it != env.values.end())
+				return std::addressof(it->second);
+
+			return nullptr;
+		}
+
+		[[nodiscard]] MacroValue* lookup_local_value(MacroEnv& env,
+													 std::string const& name) noexcept
+		{
+			if (auto it = env.shadowed_locals.find(name); it != env.shadowed_locals.end())
+				return std::addressof(it->second);
+
+			if (auto it = env.values.find(name); it != env.values.end())
+				return std::addressof(it->second);
+
+			return nullptr;
+		}
+
 		[[nodiscard]] ir::Expr expand_ref_local_expr(SourceSpan use_span,
 													 MacroValueRefLocal const& ref)
 		{
@@ -343,17 +491,17 @@ namespace yasme::macro
 				return ir::Expr{};
 			}
 
-			auto it = ref.env->values.find(ref.name);
-			if (it == ref.env->values.end())
+			auto const* slot = lookup_local_value(*ref.env, ref.name);
+			if (!slot)
 			{
 				emit_error(use_span, "macro local '" + ref.name + "' used before assignment");
 				return ir::Expr{};
 			}
 
-			if (auto const* val = std::get_if<MacroValueExpr>(&it->second))
+			if (auto const* val = std::get_if<MacroValueExpr>(slot))
 				return clone_expr(val->expr);
 
-			if (std::holds_alternative<MacroValueTokens>(it->second))
+			if (std::holds_alternative<MacroValueTokens>(*slot))
 			{
 				emit_error(use_span,
 						   "tokens parameter '" + ref.name + "' cannot be used as an expression");
@@ -378,7 +526,10 @@ namespace yasme::macro
 			if (!local_ref || !local_ref->env)
 				return false;
 
-			local_ref->env->values[local_ref->name] = MacroValueExpr{std::move(rhs)};
+			auto* slot = lookup_local_value(*local_ref->env, local_ref->name);
+			if (!slot)
+				return false;
+			*slot = MacroValueExpr{std::move(rhs)};
 			return true;
 		}
 
@@ -399,12 +550,24 @@ namespace yasme::macro
 					return ir::Expr(expr.span, ir::ExprIdent{val->name});
 				if (auto const* val = std::get_if<MacroValueRefLocal>(&it->second))
 					return expand_ref_local_expr(expr.span, *val);
-				if (std::holds_alternative<MacroValueTokens>(it->second))
+
+				if (auto const* tokens = std::get_if<MacroValueTokens>(&it->second))
 				{
-					emit_error(expr.span,
-							   "tokens parameter '" + id->name
-								   + "' cannot be used as an expression");
-					return clone_expr(expr);
+					if (slice_size(tokens->slice) == 0)
+					{
+						emit_error(expr.span,
+								   "tokens binding '" + id->name
+									   + "' is empty and cannot be used as an expression");
+						return clone_expr(expr);
+					}
+
+					TokensSubstGuard guard(this, id->name, expr.span);
+					if (!guard.active)
+						return clone_expr(expr);
+
+					auto parsed = parse_expr(tokens->slice);
+					auto const* scope = tokens->origin_env ? tokens->origin_env : env;
+					return expand_expr(parsed, scope);
 				}
 
 				emit_error(expr.span, "macro local '" + id->name + "' used before assignment");
@@ -469,16 +632,29 @@ namespace yasme::macro
 			if (!outer)
 				return MacroValueTokens{slice, nullptr};
 
-			lex::Token tok{};
-			if (!slice_is_single_ident(slice, tok))
+			auto count = slice_size(slice);
+			if (count == 0)
 				return MacroValueTokens{slice, outer};
 
-			auto it = outer->values.find(std::string(tok.lexeme));
-			if (it == outer->values.end())
-				return MacroValueTokens{slice, outer};
-
-			if (auto const* tokens = std::get_if<MacroValueTokens>(&it->second))
-				return *tokens;
+			auto const& first = slice.begin[0];
+			if (first.is(lex::TokenKind::identifier))
+			{
+				auto it = outer->values.find(std::string(first.lexeme));
+				if (it != outer->values.end())
+				{
+					if (auto const* tokens = std::get_if<MacroValueTokens>(&it->second))
+					{
+						if (count != 1)
+						{
+							auto sp = (count > 1) ? slice.begin[1].span : slice.span;
+							emit_error(sp,
+									   "tokens argument '" + std::string(first.lexeme)
+										   + "' must be passed by itself");
+						}
+						return *tokens;
+					}
+				}
+			}
 
 			return MacroValueTokens{slice, outer};
 		}
@@ -552,7 +728,7 @@ namespace yasme::macro
 
 			std::size_t min_args = param_count;
 			if (has_tokens)
-				min_args = (param_count == 1) ? 0 : param_count;
+				min_args = (param_count == 1) ? 0 : (param_count - 1);
 
 			std::size_t max_args = param_count;
 
@@ -564,7 +740,7 @@ namespace yasme::macro
 			if (call_args.size() < min_args || call_args.size() > max_args)
 			{
 				emit_error(call.span,
-						   make_macro_sig_error(def.name, min_args, max_args, call.args.size()));
+						   make_macro_sig_error(def.name, min_args, max_args, call_args.size()));
 				return false;
 			}
 
@@ -578,25 +754,20 @@ namespace yasme::macro
 					MacroValueTokens tokens_val{};
 					if (arg_index < call_args.size())
 						tokens_val = resolve_tokens_arg(call_args[arg_index], outer);
-
-					else if (param_count != 1)
-					{
-						emit_error(param.span,
-								   "missing argument for parameter '" + param.name + "'");
-						return false;
-					}
+					else
+						tokens_val = MacroValueTokens{{}, outer};
 
 					env.values[param.name] = tokens_val;
 					continue;
 				}
 
-				if (arg_index >= call.args.size())
+				if (arg_index >= call_args.size())
 				{
 					emit_error(param.span, "missing argument for parameter '" + param.name + "'");
 					return false;
 				}
 
-				auto const slice = call.args[arg_index];
+				auto const slice = call_args[arg_index];
 
 				if (param.kind == fe::MacroParamKind::ref)
 				{
@@ -659,6 +830,9 @@ namespace yasme::macro
 
 		void expand_stmt(fe::Stmt const& st, MacroEnv* env, std::vector<ir::StmtPtr>& out)
 		{
+			if (aborting_current_macro(env))
+				return;
+
 			std::visit(
 				Overload{
 					[this, env](fe::StmtMacroDef const& node) {
@@ -684,106 +858,64 @@ namespace yasme::macro
 						for (auto& st2 : expanded)
 							out.push_back(std::move(st2));
 					},
-					[this, env](fe::StmtMacroError const& node) {
+					[this, env, &out](fe::StmtMacroError const& node) {
 						if (!env)
 						{
 							emit_error(node.span, "'error' is only valid inside macro bodies");
 							return;
 						}
 
-						auto msg_expr = expand_expr(node.message, env);
-						auto msg = try_string_value(msg_expr);
-						if (!msg)
-						{
-							emit_error(node.message.span, "macro 'error' message must be a string");
-							msg = std::string("macro expansion failed");
-						}
+						ir::StmtError e{};
+						e.span = node.span;
+						e.message = expand_expr(node.message, env);
+
+						auto add_note = [&](SourceSpan sp, std::string text) {
+							ir::DiagItem it{};
+							it.span = sp;
+							it.kind = ir::DiagKind::note;
+							it.message = make_string_expr(sp, std::move(text));
+							e.items.push_back(std::move(it));
+						};
 
 						SourceSpan primary = node.span;
 						if (node.primary_tokens)
 							if (auto sp = try_tokens_span(*node.primary_tokens, *env))
 								primary = *sp;
 							else
-								emit_error(node.span,
-										   "unknown tokens binding '" + *node.primary_tokens
-											   + "' for error span");
+								add_note(node.span,
+										 "unknown tokens binding '" + *node.primary_tokens
+											 + "' for error span");
 						else if (!m_call_stack.empty() && m_call_stack.back().span.id != 0)
 							primary = m_call_stack.back().span;
-
-						Diagnostic d{};
-						d.level = DiagnosticLevel::error;
-						d.message = *msg;
-						d.primary = primary;
+						e.primary = primary;
 
 						for (auto const& item : node.items)
 						{
-							auto item_msg_expr = expand_expr(item.message, env);
-							auto item_msg = try_string_value(item_msg_expr);
-							if (!item_msg)
-							{
-								emit_error(item.message.span,
-										   "diagnostic item message must be a string");
-								continue;
-							}
-
-							auto add_label_kind = [](fe::DiagItemKind k) -> LabelKind {
-								switch (k)
-								{
-									case fe::DiagItemKind::note:
-										return LabelKind::note;
-									case fe::DiagItemKind::help:
-										return LabelKind::help;
-									case fe::DiagItemKind::suggestion:
-										return LabelKind::suggestion;
-									case fe::DiagItemKind::reference:
-										return LabelKind::reference;
-								}
-								return LabelKind::note;
-							};
-
-							auto add_advice_kind = [](fe::DiagItemKind k) -> AdviceKind {
-								switch (k)
-								{
-									case fe::DiagItemKind::note:
-										return AdviceKind::note;
-									case fe::DiagItemKind::help:
-										return AdviceKind::help;
-									case fe::DiagItemKind::suggestion:
-										return AdviceKind::suggestion;
-									case fe::DiagItemKind::reference:
-										return AdviceKind::note;
-								}
-								return AdviceKind::note;
-							};
+							ir::DiagItem it{};
+							it.span = item.span;
+							it.kind = to_ir_diag_kind(item.kind);
+							it.message = expand_expr(item.message, env);
 
 							if (item.tokens_name)
 							{
 								if (auto sp = try_tokens_span(*item.tokens_name, *env))
 								{
-									d.labels.push_back(DiagnosticLabel{
-										*item_msg,
-										*sp,
-										add_label_kind(item.kind),
-									});
+									it.label_span = *sp;
 								}
 								else
 								{
-									emit_error(item.span,
-											   "unknown tokens binding '" + *item.tokens_name
-												   + "' for diagnostic item");
+									add_note(item.span,
+											 "unknown tokens binding '" + *item.tokens_name
+												 + "' for diagnostic item");
 								}
 							}
-							else
-							{
-								d.advices.push_back(DiagnosticAdvice{
-									add_advice_kind(item.kind),
-									*item_msg,
-								});
-							}
+
+							e.items.push_back(std::move(it));
 						}
 
-						attach_call_stack_context(d);
-						m_diag->emit(d);
+						append_call_stack_context(e);
+
+						out.push_back(std::make_unique<ir::Stmt>(ir::Stmt(std::move(e))));
 
 						m_abort_depth = m_call_stack.size();
 					},
@@ -835,7 +967,10 @@ namespace yasme::macro
 
 						if (env->locals.contains(node.out_name))
 						{
-							env->values[node.out_name] = MacroValueExpr{std::move(expr)};
+							if (auto* slot = lookup_local_value(*env, node.out_name))
+								*slot = MacroValueExpr{std::move(expr)};
+							else
+								env->values[node.out_name] = MacroValueExpr{std::move(expr)};
 							return;
 						}
 
@@ -863,10 +998,18 @@ namespace yasme::macro
 						s.has_else = node.has_else;
 
 						for (auto const& st2 : node.then_body)
+						{
 							expand_stmt(*st2, env, s.then_body);
+							if (aborting_current_macro(env))
+								break;
+						}
 
 						for (auto const& st2 : node.else_body)
+						{
 							expand_stmt(*st2, env, s.else_body);
+							if (aborting_current_macro(env))
+								break;
+						}
 
 						out.push_back(std::make_unique<ir::Stmt>(ir::Stmt(std::move(s))));
 					},
@@ -875,8 +1018,13 @@ namespace yasme::macro
 						s.span = node.span;
 						s.count = expand_expr(node.count, env);
 
+						LoopDepthGuard guard(this);
 						for (auto const& st2 : node.body)
+						{
 							expand_stmt(*st2, env, s.body);
+							if (aborting_current_macro(env))
+								break;
+						}
 
 						out.push_back(std::make_unique<ir::Stmt>(ir::Stmt(std::move(s))));
 					},
@@ -885,8 +1033,13 @@ namespace yasme::macro
 						s.span = node.span;
 						s.cond = expand_expr(node.cond, env);
 
+						LoopDepthGuard guard(this);
 						for (auto const& st2 : node.body)
+						{
 							expand_stmt(*st2, env, s.body);
+							if (aborting_current_macro(env))
+								break;
+						}
 
 						out.push_back(std::make_unique<ir::Stmt>(ir::Stmt(std::move(s))));
 					},
@@ -899,8 +1052,13 @@ namespace yasme::macro
 						if (node.step)
 							s.step = expand_expr(*node.step, env);
 
+						LoopDepthGuard guard(this);
 						for (auto const& st2 : node.body)
+						{
 							expand_stmt(*st2, env, s.body);
+							if (aborting_current_macro(env))
+								break;
+						}
 
 						out.push_back(std::make_unique<ir::Stmt>(ir::Stmt(std::move(s))));
 					},
@@ -910,8 +1068,13 @@ namespace yasme::macro
 						s.var = node.var;
 						s.str = expand_expr(node.str, env);
 
+						LoopDepthGuard guard(this);
 						for (auto const& st2 : node.body)
+						{
 							expand_stmt(*st2, env, s.body);
+							if (aborting_current_macro(env))
+								break;
+						}
 
 						out.push_back(std::make_unique<ir::Stmt>(ir::Stmt(std::move(s))));
 					},
@@ -947,10 +1110,17 @@ namespace yasme::macro
 						MatchResult result{};
 						if (match_pattern(parsed.pattern, tokens->slice, result))
 						{
+							enum class RestoreKind
+							{
+								restore_value,
+								erase_value,
+								restore_shadowed_local,
+							};
+
 							struct Restore
 							{
 								std::string name{};
-								bool had_value{};
+								RestoreKind kind{RestoreKind::erase_value};
 								MacroValue value{};
 							};
 
@@ -961,9 +1131,30 @@ namespace yasme::macro
 								auto it_value = env->values.find(name);
 								Restore r{};
 								r.name = name;
-								r.had_value = (it_value != env->values.end());
-								if (r.had_value)
+								auto const is_local = env->locals.contains(name);
+								auto const is_unshadowed_local =
+									is_local && !env->shadowed_locals.contains(name);
+
+								if (is_unshadowed_local)
+								{
+									if (it_value != env->values.end())
+									{
+										env->shadowed_locals.emplace(name,
+																	 std::move(it_value->second));
+										env->values.erase(it_value);
+									}
+									else
+										env->shadowed_locals.emplace(name, MacroValueUnknown{});
+
+									r.kind = RestoreKind::restore_shadowed_local;
+								}
+								else if (it_value != env->values.end())
+								{
+									r.kind = RestoreKind::restore_value;
 									r.value = std::move(it_value->second);
+								}
+								else
+									r.kind = RestoreKind::erase_value;
 
 								restores.push_back(std::move(r));
 								env->values[name] = MacroValueTokens{slice, tokens->origin_env};
@@ -975,10 +1166,30 @@ namespace yasme::macro
 							for (auto it_restore = restores.rbegin(); it_restore != restores.rend();
 								 ++it_restore)
 							{
-								if (it_restore->had_value)
-									env->values[it_restore->name] = std::move(it_restore->value);
-								else
-									env->values.erase(it_restore->name);
+								switch (it_restore->kind)
+								{
+									case RestoreKind::restore_value:
+										env->values[it_restore->name] =
+											std::move(it_restore->value);
+										break;
+									case RestoreKind::erase_value:
+										env->values.erase(it_restore->name);
+										break;
+									case RestoreKind::restore_shadowed_local: {
+										env->values.erase(it_restore->name);
+										if (auto it_local =
+												env->shadowed_locals.find(it_restore->name);
+											it_local != env->shadowed_locals.end())
+										{
+											env->values[it_restore->name] =
+												std::move(it_local->second);
+											env->shadowed_locals.erase(it_local);
+										}
+										else
+											env->values[it_restore->name] = MacroValueUnknown{};
+									}
+									break;
+								}
 							}
 						}
 						else if (node.has_else)
@@ -1018,6 +1229,9 @@ namespace yasme::macro
 
 		void expand_normal(ir::Stmt const& st, MacroEnv* env, std::vector<ir::StmtPtr>& out)
 		{
+			if (aborting_current_macro(env))
+				return;
+
 			std::visit(
 				Overload{
 					[this, env, &out](ir::StmtOrg const& node) {
@@ -1036,7 +1250,11 @@ namespace yasme::macro
 						auto rhs = expand_expr(node.rhs, env);
 						if (env && env->locals.contains(node.name))
 						{
-							env->values[node.name] = MacroValueExpr{std::move(rhs)};
+							if (auto* slot = lookup_local_value(*env, node.name))
+								*slot = MacroValueExpr{std::move(rhs)};
+							else
+								env->values[node.name] = MacroValueExpr{std::move(rhs)};
+
 							return;
 						}
 
@@ -1119,6 +1337,23 @@ namespace yasme::macro
 						s.span = node.span;
 						out.push_back(std::make_unique<ir::Stmt>(ir::Stmt(std::move(s))));
 					},
+					[this, env, &out](ir::StmtError const& node) {
+						ir::StmtError e{};
+						e.span = node.span;
+						e.primary = node.primary;
+						e.message = expand_expr(node.message, env);
+						e.items.reserve(node.items.size());
+						for (auto const& item : node.items)
+						{
+							ir::DiagItem it{};
+							it.span = item.span;
+							it.kind = item.kind;
+							it.label_span = item.label_span;
+							it.message = expand_expr(item.message, env);
+							e.items.push_back(std::move(it));
+						}
+						out.push_back(std::make_unique<ir::Stmt>(ir::Stmt(std::move(e))));
+					},
 					[this, env, &out](ir::StmtIf const& node) {
 						ir::StmtIf s{};
 						s.span = node.span;
@@ -1131,6 +1366,8 @@ namespace yasme::macro
 								continue;
 
 							expand_normal(*st2, env, s.then_body);
+							if (aborting_current_macro(env))
+								break;
 						}
 
 						for (auto const& st2 : node.else_body)
@@ -1139,6 +1376,8 @@ namespace yasme::macro
 								continue;
 
 							expand_normal(*st2, env, s.else_body);
+							if (aborting_current_macro(env))
+								break;
 						}
 
 						out.push_back(std::make_unique<ir::Stmt>(ir::Stmt(std::move(s))));
@@ -1147,12 +1386,15 @@ namespace yasme::macro
 						ir::StmtRepeat s{};
 						s.span = node.span;
 						s.count = expand_expr(node.count, env);
+						LoopDepthGuard guard(this);
 						for (auto const& st2 : node.body)
 						{
 							if (!st2)
 								continue;
 
 							expand_normal(*st2, env, s.body);
+							if (aborting_current_macro(env))
+								break;
 						}
 						out.push_back(std::make_unique<ir::Stmt>(ir::Stmt(std::move(s))));
 					},
@@ -1160,12 +1402,15 @@ namespace yasme::macro
 						ir::StmtWhile s{};
 						s.span = node.span;
 						s.cond = expand_expr(node.cond, env);
+						LoopDepthGuard guard(this);
 						for (auto const& st2 : node.body)
 						{
 							if (!st2)
 								continue;
 
 							expand_normal(*st2, env, s.body);
+							if (aborting_current_macro(env))
+								break;
 						}
 						out.push_back(std::make_unique<ir::Stmt>(ir::Stmt(std::move(s))));
 					},
@@ -1178,12 +1423,15 @@ namespace yasme::macro
 						if (node.step)
 							s.step = expand_expr(*node.step, env);
 
+						LoopDepthGuard guard(this);
 						for (auto const& st2 : node.body)
 						{
 							if (!st2)
 								continue;
 
 							expand_normal(*st2, env, s.body);
+							if (aborting_current_macro(env))
+								break;
 						}
 						out.push_back(std::make_unique<ir::Stmt>(ir::Stmt(std::move(s))));
 					},
@@ -1192,24 +1440,69 @@ namespace yasme::macro
 						s.span = node.span;
 						s.var = node.var;
 						s.str = expand_expr(node.str, env);
+						LoopDepthGuard guard(this);
 						for (auto const& st2 : node.body)
 						{
 							if (!st2)
 								continue;
 
 							expand_normal(*st2, env, s.body);
+							if (aborting_current_macro(env))
+								break;
 						}
 						out.push_back(std::make_unique<ir::Stmt>(ir::Stmt(std::move(s))));
 					},
-					[&out](ir::StmtBreak const& node) {
-						ir::StmtBreak s{};
-						s.span = node.span;
-						out.push_back(std::make_unique<ir::Stmt>(ir::Stmt(std::move(s))));
+					[this, env, &out](ir::StmtBreak const& node) {
+						if (env)
+						{
+							auto const base = current_macro_loop_base(env);
+							if (m_loop_depth > base)
+							{
+								ir::StmtBreak s{};
+								s.span = node.span;
+								out.push_back(std::make_unique<ir::Stmt>(ir::Stmt(std::move(s))));
+								return;
+							}
+
+							m_return_depth = m_call_stack.size();
+							return;
+						}
+
+						if (m_loop_depth != 0)
+						{
+							ir::StmtBreak s{};
+							s.span = node.span;
+							out.push_back(std::make_unique<ir::Stmt>(ir::Stmt(std::move(s))));
+							return;
+						}
+
+						emit_error(node.span, "'break' outside of a loop");
 					},
-					[&out](ir::StmtContinue const& node) {
-						ir::StmtContinue s{};
-						s.span = node.span;
-						out.push_back(std::make_unique<ir::Stmt>(ir::Stmt(std::move(s))));
+					[this, env, &out](ir::StmtContinue const& node) {
+						if (env)
+						{
+							auto const base = current_macro_loop_base(env);
+							if (m_loop_depth > base)
+							{
+								ir::StmtContinue s{};
+								s.span = node.span;
+								out.push_back(std::make_unique<ir::Stmt>(ir::Stmt(std::move(s))));
+								return;
+							}
+
+							emit_error(node.span, "'continue' outside of a loop");
+							return;
+						}
+
+						if (m_loop_depth != 0)
+						{
+							ir::StmtContinue s{};
+							s.span = node.span;
+							out.push_back(std::make_unique<ir::Stmt>(ir::Stmt(std::move(s))));
+							return;
+						}
+
+						emit_error(node.span, "'continue' outside of a loop");
 					},
 					[](auto const&) {},
 				},
@@ -1238,26 +1531,23 @@ namespace yasme::macro
 				return out;
 			}
 
+			auto const depth = m_call_stack.size();
 			for (auto const& st : it->second.def->body)
 			{
 				expand_stmt(*st, &env, out);
-				if (m_abort_depth == m_call_stack.size())
+				if ((m_abort_depth != 0 && m_abort_depth == depth)
+					|| (m_return_depth != 0 && m_return_depth == depth))
 					break;
 			}
 
-			if (m_abort_depth == m_call_stack.size())
+			if (m_abort_depth != 0 && m_abort_depth == depth)
 				m_abort_depth = 0;
+
+			if (m_return_depth != 0 && m_return_depth == depth)
+				m_return_depth = 0;
 
 			pop_call();
 			return out;
-		}
-
-		[[nodiscard]] std::optional<std::string> try_string_value(ir::Expr const& e) const
-		{
-			if (auto const* s = std::get_if<ir::ExprStr>(&e.node))
-				return s->value;
-
-			return std::nullopt;
 		}
 
 		[[nodiscard]] std::optional<SourceSpan> try_tokens_span(std::string const& name,
@@ -1274,42 +1564,18 @@ namespace yasme::macro
 			return tokens->slice.span;
 		}
 
-		void attach_call_stack_context(Diagnostic& d) const
-		{
-			for (auto const& frame : m_call_stack)
-			{
-				if (frame.span.id != 0)
-				{
-					d.labels.push_back(DiagnosticLabel{
-						"expanded from macro '" + frame.name + "'",
-						frame.span,
-						LabelKind::reference,
-					});
-				}
-			}
-
-			if (!m_call_stack.empty())
-			{
-				auto const& top = m_call_stack.back();
-				if (top.def_span.id != 0)
-				{
-					d.labels.push_back(DiagnosticLabel{
-						"macro '" + top.name + "' defined here",
-						top.def_span,
-						LabelKind::note,
-					});
-				}
-			}
-		}
-
 	private:
 		SourceManager* m_sources{};
 		Diagnostics* m_diag{};
 		std::unordered_map<std::string, MacroDef> m_macros{};
 		std::vector<CallFrame> m_call_stack{};
+		std::vector<std::string> m_tokens_subst_stack{};
 		std::vector<std::string> m_include_stack{};
 		std::unordered_map<std::string, std::unique_ptr<fe::Program>> m_include_programs{};
+		std::vector<std::size_t> m_call_loop_base_stack{};
 		std::size_t m_abort_depth{};
+		std::size_t m_return_depth{};
+		std::size_t m_loop_depth{};
 	};
 
 	Expander::Expander(SourceManager& sources, Diagnostics& diag) noexcept

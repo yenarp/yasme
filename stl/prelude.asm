@@ -1,11 +1,5 @@
-macro inc ref x
-	x = 1
-end macro
 
 macro use tokens arch
-	local z
-	inc z
-
 	match arch, 8086
 		dw 8086
 	else match arch, x86

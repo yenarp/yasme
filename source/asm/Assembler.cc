@@ -222,6 +222,10 @@ namespace yasme
 				[&](ir::StmtWhile const& s) -> Flow { return apply_while(st, s); },
 				[&](ir::StmtForNumeric const& s) -> Flow { return apply_for_numeric(st, s); },
 				[&](ir::StmtForChars const& s) -> Flow { return apply_for_chars(st, s); },
+				[&](ir::StmtError const& s) -> Flow {
+					apply_error(st, s);
+					return {};
+				},
 				[&](ir::StmtBreak const& s) -> Flow {
 					Flow f{};
 					f.kind = Flow::Kind::break_;
@@ -315,6 +319,11 @@ namespace yasme
 		auto& stream = cur_stream(st);
 		auto const addr = static_cast<std::uint64_t>(addr_i);
 		auto const off = static_cast<std::uint64_t>(stream.bytes.size());
+		if (addr < off)
+		{
+			error(st, s.span, "org address is behind the current position");
+			return;
+		}
 
 		stream.origin = addr - off;
 		st.dollar_address = addr;
@@ -601,6 +610,7 @@ namespace yasme
 		if (stream_it == st.streams.end())
 		{
 			error(st, s.stream.span, "unknown stream '" + *stream_name + "'");
+			set_unknown();
 			return;
 		}
 
@@ -1076,6 +1086,102 @@ namespace yasme
 
 		st = std::move(tmp);
 		return {};
+	}
+
+	namespace
+	{
+		[[nodiscard]] LabelKind to_label_kind(ir::DiagKind k) noexcept
+		{
+			switch (k)
+			{
+				case ir::DiagKind::note:
+					return LabelKind::note;
+				case ir::DiagKind::help:
+					return LabelKind::help;
+				case ir::DiagKind::suggestion:
+					return LabelKind::suggestion;
+				case ir::DiagKind::reference:
+					return LabelKind::reference;
+			}
+			return LabelKind::note;
+		}
+
+		[[nodiscard]] AdviceKind to_advice_kind(ir::DiagKind k) noexcept
+		{
+			switch (k)
+			{
+				case ir::DiagKind::note:
+					return AdviceKind::note;
+				case ir::DiagKind::help:
+					return AdviceKind::help;
+				case ir::DiagKind::suggestion:
+					return AdviceKind::suggestion;
+				case ir::DiagKind::reference:
+					return AdviceKind::note;
+			}
+			return AdviceKind::note;
+		}
+
+		[[nodiscard]] std::string diag_value_to_string(Assembler::Value const& v)
+		{
+			if (Assembler::is_str(v))
+				return std::get<std::string>(v);
+			if (Assembler::is_int(v))
+				return std::to_string(std::get<std::int64_t>(v));
+			return {};
+		}
+	} // namespace
+
+	void Assembler::apply_error(PassState& st, ir::StmtError const& s)
+	{
+		Diagnostic d{};
+		d.level = DiagnosticLevel::error;
+
+		auto msg_v = eval_value(st, s.message);
+		if (is_unknown(msg_v))
+			d.message = "error (message unresolved)";
+		else
+		{
+			auto str = diag_value_to_string(msg_v);
+			d.message = str.empty() ? std::string("error") : std::move(str);
+		}
+
+		if (s.primary.id != 0)
+			d.primary = s.primary;
+		else
+			d.primary = s.span;
+
+		for (auto const& item : s.items)
+		{
+			auto item_v = eval_value(st, item.message);
+			std::string text{};
+			if (is_unknown(item_v))
+				text = "unresolved diagnostic message";
+			else
+			{
+				text = diag_value_to_string(item_v);
+				if (text.empty())
+					text = "invalid diagnostic message";
+			}
+
+			if (item.label_span && item.label_span->id != 0)
+			{
+				d.labels.push_back(DiagnosticLabel{
+					std::move(text),
+					*item.label_span,
+					to_label_kind(item.kind),
+				});
+			}
+			else
+			{
+				d.advices.push_back(DiagnosticAdvice{
+					to_advice_kind(item.kind),
+					std::move(text),
+				});
+			}
+		}
+
+		emit_diag(st, std::move(d));
 	}
 
 	Assembler::Value Assembler::eval_builtin(PassState& st, ir::ExprBuiltin const& b)
@@ -1621,18 +1727,23 @@ namespace yasme
 		return static_cast<std::size_t>(h);
 	}
 
-	void Assembler::error(PassState& st, SourceSpan span, std::string msg)
+	void Assembler::emit_diag(PassState& st, Diagnostic d)
 	{
 		++st.errors;
 
 		if (!g_emit_diagnostics)
 			return;
 
+		m_diag->emit(d);
+	}
+
+	void Assembler::error(PassState& st, SourceSpan span, std::string msg)
+	{
 		Diagnostic d{};
 		d.level = DiagnosticLevel::error;
 		d.message = std::move(msg);
 		d.primary = span;
-		m_diag->emit(d);
+		emit_diag(st, std::move(d));
 	}
 
 } // namespace yasme
