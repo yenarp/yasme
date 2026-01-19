@@ -209,10 +209,7 @@ namespace yasme
 					apply_load(st, s);
 					return {};
 				},
-				[&](ir::StmtVirtual const& s) -> Flow {
-					apply_virtual(st, s);
-					return {};
-				},
+				[&](ir::StmtVirtual const& s) -> Flow { return apply_virtual(st, s); },
 				[&](ir::StmtPostpone const& s) -> Flow {
 					apply_postpone(st, s);
 					return {};
@@ -297,7 +294,7 @@ namespace yasme
 
 			auto f = walk_block_cf(st, p->body);
 			if (f.kind == Flow::Kind::macro_return)
-				continue;
+				error(st, f.span, "break used inside postpone loop");
 			if (f.kind != Flow::Kind::none)
 				error(st, f.span, "break/continue used outside of a loop");
 		}
@@ -706,7 +703,7 @@ namespace yasme
 		st.symbols[s.dest] = std::move(sym);
 	}
 
-	void Assembler::apply_virtual(PassState& st, ir::StmtVirtual const& s)
+	Assembler::Flow Assembler::apply_virtual(PassState& st, ir::StmtVirtual const& s)
 	{
 		auto old_stream = st.current_stream;
 
@@ -732,13 +729,17 @@ namespace yasme
 		st.dollar_address = it->second.origin + it->second.bytes.size();
 
 		auto f = walk_block_cf(st, s.body);
-		if (f.kind == Flow::Kind::macro_return)
-			f = {};
-		if (f.kind != Flow::Kind::none)
-			error(st, f.span, "break/continue used outside of a loop");
 
 		st.current_stream = old_stream;
 		st.dollar_address = cur_stream(st).origin + cur_stream(st).bytes.size();
+
+		if (f.kind == Flow::Kind::break_ || f.kind == Flow::Kind::continue_)
+		{
+			error(st, f.span, "break/continue used outside of a loop");
+			return {};
+		}
+
+		return f;
 	}
 
 	void Assembler::apply_postpone(PassState& st, ir::StmtPostpone const& s)
