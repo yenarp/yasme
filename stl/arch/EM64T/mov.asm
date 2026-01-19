@@ -24,14 +24,14 @@ macro mov_reg_reg tokens t
 
 		evalwrap modrm, 0b11<<6|(dstnum)|(srcnum<<3)
 
-		if dstsize - srcsize
-			; error "Invalid operand sizes", t
-			; end error
+		if dstsize == srcsize
+			emit_mov_mr srcsize
+			db modrm
+		else
+			error "Invalid operand sizes", t
+			end error
 		end if
 
-		emit_mov_mr srcsize
-
-		db modrm
 	
 	end match
 end macro
@@ -48,14 +48,14 @@ macro mov_deref_reg_reg tokens t
 
 		evalwrap modrm, 0b00<<6|(dstnum)|(srcnum<<3)
 
-		if dstsize - srcsize
-			; error "Invalid operand sizes", t
-			; end error
+		if dstsize == srcsize
+			emit_mov_mr srcsize
+			db modrm
+		else
+			error "Invalid operand sizes", t
+			end error
 		end if
 
-		emit_mov_mr srcsize
-
-		db modrm
 	
 	end match
 end macro
@@ -72,14 +72,13 @@ macro mov_reg_deref_reg tokens t
 
 		evalwrap modrm, 0b00<<6|(dstnum<<3)|(srcnum)
 
-		if dstsize - srcsize
-			; error "Invalid operand sizes", t
-			; end error
+		if dstsize == srcsize
+			emit_mov_rm srcsize
+			db modrm
+		else
+			error "Invalid operand sizes", t
+			end error
 		end if
-
-		emit_mov_rm srcsize
-
-		db modrm
 	
 	end match
 end macro
