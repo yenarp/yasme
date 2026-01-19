@@ -134,6 +134,7 @@ namespace yasme::macro
 			m_abort_depth = 0;
 			m_return_depth = 0;
 			m_loop_depth = 0;
+			m_runtime_cf_depth = 0;
 
 			m_macros.clear();
 			m_call_stack.clear();
@@ -228,6 +229,21 @@ namespace yasme::macro
 			{
 				if (self && active)
 					self->pop_tokens_subst();
+			}
+		};
+
+		struct RuntimeCfGuard
+		{
+			ExpanderImpl* self{};
+			explicit RuntimeCfGuard(ExpanderImpl* s) : self(s)
+			{
+				if (self)
+					++self->m_runtime_cf_depth;
+			}
+			~RuntimeCfGuard()
+			{
+				if (self)
+					--self->m_runtime_cf_depth;
 			}
 		};
 
@@ -927,7 +943,8 @@ namespace yasme::macro
 
 						out.push_back(std::make_unique<ir::Stmt>(ir::Stmt(std::move(e))));
 
-						m_abort_depth = m_call_stack.size();
+						if (m_runtime_cf_depth == 0)
+							m_abort_depth = m_call_stack.size();
 					},
 					[this, env](fe::StmtLocal const& node) {
 						if (!env)
@@ -1007,6 +1024,7 @@ namespace yasme::macro
 						s.cond = expand_expr(node.cond, env);
 						s.has_else = node.has_else;
 
+						RuntimeCfGuard cf(this);
 						for (auto const& st2 : node.then_body)
 						{
 							expand_stmt(*st2, env, s.then_body);
@@ -1028,6 +1046,7 @@ namespace yasme::macro
 						s.span = node.span;
 						s.count = expand_expr(node.count, env);
 
+						RuntimeCfGuard cf(this);
 						LoopDepthGuard guard(this);
 						for (auto const& st2 : node.body)
 						{
@@ -1043,6 +1062,7 @@ namespace yasme::macro
 						s.span = node.span;
 						s.cond = expand_expr(node.cond, env);
 
+						RuntimeCfGuard cf(this);
 						LoopDepthGuard guard(this);
 						for (auto const& st2 : node.body)
 						{
@@ -1062,6 +1082,7 @@ namespace yasme::macro
 						if (node.step)
 							s.step = expand_expr(*node.step, env);
 
+						RuntimeCfGuard cf(this);
 						LoopDepthGuard guard(this);
 						for (auto const& st2 : node.body)
 						{
@@ -1078,6 +1099,7 @@ namespace yasme::macro
 						s.var = node.var;
 						s.str = expand_expr(node.str, env);
 
+						RuntimeCfGuard cf(this);
 						LoopDepthGuard guard(this);
 						for (auto const& st2 : node.body)
 						{
@@ -1214,6 +1236,7 @@ namespace yasme::macro
 						if (node.name_expr)
 							virt.name_expr = expand_expr(*node.name_expr, env);
 
+						RuntimeCfGuard cf(this);
 						for (auto const& st2 : node.body)
 							expand_stmt(*st2, env, virt.body);
 
@@ -1224,6 +1247,7 @@ namespace yasme::macro
 						postpone.span = node.span;
 						postpone.mode = node.mode;
 
+						RuntimeCfGuard cf(this);
 						for (auto const& st2 : node.body)
 							expand_stmt(*st2, env, postpone.body);
 
@@ -1396,6 +1420,8 @@ namespace yasme::macro
 						ir::StmtRepeat s{};
 						s.span = node.span;
 						s.count = expand_expr(node.count, env);
+
+						RuntimeCfGuard cf(this);
 						LoopDepthGuard guard(this);
 						for (auto const& st2 : node.body)
 						{
@@ -1412,6 +1438,8 @@ namespace yasme::macro
 						ir::StmtWhile s{};
 						s.span = node.span;
 						s.cond = expand_expr(node.cond, env);
+
+						RuntimeCfGuard cf(this);
 						LoopDepthGuard guard(this);
 						for (auto const& st2 : node.body)
 						{
@@ -1433,6 +1461,7 @@ namespace yasme::macro
 						if (node.step)
 							s.step = expand_expr(*node.step, env);
 
+						RuntimeCfGuard cf(this);
 						LoopDepthGuard guard(this);
 						for (auto const& st2 : node.body)
 						{
@@ -1450,6 +1479,8 @@ namespace yasme::macro
 						s.span = node.span;
 						s.var = node.var;
 						s.str = expand_expr(node.str, env);
+
+						RuntimeCfGuard cf(this);
 						LoopDepthGuard guard(this);
 						for (auto const& st2 : node.body)
 						{
@@ -1586,6 +1617,7 @@ namespace yasme::macro
 		std::size_t m_abort_depth{};
 		std::size_t m_return_depth{};
 		std::size_t m_loop_depth{};
+		std::size_t m_runtime_cf_depth{};
 	};
 
 	Expander::Expander(SourceManager& sources, Diagnostics& diag) noexcept
