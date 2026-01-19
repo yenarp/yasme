@@ -143,7 +143,7 @@ namespace yasme
 		void apply_define(PassState& st, ir::StmtDefine const& s);
 		void apply_emit_data(PassState& st, ir::StmtEmitData const& s);
 		void apply_load(PassState& st, ir::StmtLoad const& s);
-		void apply_virtual(PassState& st, ir::StmtVirtual const& s);
+		Flow apply_virtual(PassState& st, ir::StmtVirtual const& s);
 		void apply_postpone(PassState& st, ir::StmtPostpone const& s);
 
 		[[nodiscard]] Flow apply_if(PassState& st, ir::StmtIf const& s);

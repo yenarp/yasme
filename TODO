@@ -5,4 +5,5 @@
 - [ ] Make `eval` work like a reverse match so user can supply a custom pattern and not just eval token-list variables.
 - [ ] Add symbolic constants with no value backing.
 - [ ] Add a way to test for symbolic variable equality.
+- [ ] Add a way to delete a macro.
 - [ ] Add `patch`
