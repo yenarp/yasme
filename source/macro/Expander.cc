@@ -1,6 +1,8 @@
+#include <cstdint>
 #include <deque>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -139,6 +141,8 @@ namespace yasme::macro
 		[[nodiscard]] ir::Program expand(fe::Program const& program)
 		{
 			m_loop_depth = 0;
+			m_return_depth = 0;
+			m_runtime_cf_depth = 0;
 
 			m_macros.clear();
 			m_call_stack.clear();
@@ -146,6 +150,8 @@ namespace yasme::macro
 			m_include_programs.clear();
 			m_tokens_subst_stack.clear();
 			m_call_loop_base_stack.clear();
+			m_generated_token_lists.clear();
+			m_generated_token_lexemes.clear();
 
 			for (auto const& st : program.stmts)
 				collect_macros(*st);
@@ -233,6 +239,30 @@ namespace yasme::macro
 			{
 				if (self && active)
 					self->pop_tokens_subst();
+			}
+		};
+
+		[[nodiscard]] bool aborting_current_macro(MacroEnv const* env) const noexcept
+		{
+			if (!env)
+				return false;
+
+			auto const depth = m_call_stack.size();
+			return m_return_depth != 0 && m_return_depth == depth;
+		}
+
+		struct RuntimeCfGuard
+		{
+			ExpanderImpl* self{};
+			explicit RuntimeCfGuard(ExpanderImpl* s) : self(s)
+			{
+				if (self)
+					++self->m_runtime_cf_depth;
+			}
+			~RuntimeCfGuard()
+			{
+				if (self)
+					--self->m_runtime_cf_depth;
 			}
 		};
 
@@ -892,8 +922,8 @@ namespace yasme::macro
 
 			if (auto const* ref = std::get_if<MacroValueRefLocal>(&it->second))
 			{
-				auto expr = expand_ref_local_expr(span, *ref);
-				append_expr_tokens(out, expr);
+				auto expr2 = expand_ref_local_expr(span, *ref);
+				append_expr_tokens(out, expr2);
 				return true;
 			}
 
@@ -1140,6 +1170,9 @@ namespace yasme::macro
 
 		void expand_stmt(fe::Stmt const& st, MacroEnv* env, std::vector<ir::StmtPtr>& out)
 		{
+			if (aborting_current_macro(env))
+				return;
+
 			std::visit(
 				Overload{
 					[this, env](fe::StmtMacroDef const& node) {
@@ -1156,7 +1189,11 @@ namespace yasme::macro
 						auto const* p = load_include_program(node);
 						if (p != nullptr)
 							for (auto const& st2 : p->stmts)
+							{
 								expand_stmt(*st2, env, out);
+								if (aborting_current_macro(env))
+									break;
+							}
 
 						pop_include();
 					},
@@ -1340,11 +1377,20 @@ namespace yasme::macro
 						s.cond = expand_expr(node.cond, env);
 						s.has_else = node.has_else;
 
+						RuntimeCfGuard cf(this);
 						for (auto const& st2 : node.then_body)
+						{
 							expand_stmt(*st2, env, s.then_body);
+							if (aborting_current_macro(env))
+								break;
+						}
 
 						for (auto const& st2 : node.else_body)
+						{
 							expand_stmt(*st2, env, s.else_body);
+							if (aborting_current_macro(env))
+								break;
+						}
 
 						out.push_back(std::make_unique<ir::Stmt>(ir::Stmt(std::move(s))));
 					},
@@ -1353,9 +1399,14 @@ namespace yasme::macro
 						s.span = node.span;
 						s.count = expand_expr(node.count, env);
 
+						RuntimeCfGuard cf(this);
 						LoopDepthGuard guard(this);
 						for (auto const& st2 : node.body)
+						{
 							expand_stmt(*st2, env, s.body);
+							if (aborting_current_macro(env))
+								break;
+						}
 
 						out.push_back(std::make_unique<ir::Stmt>(ir::Stmt(std::move(s))));
 					},
@@ -1364,9 +1415,14 @@ namespace yasme::macro
 						s.span = node.span;
 						s.cond = expand_expr(node.cond, env);
 
+						RuntimeCfGuard cf(this);
 						LoopDepthGuard guard(this);
 						for (auto const& st2 : node.body)
+						{
 							expand_stmt(*st2, env, s.body);
+							if (aborting_current_macro(env))
+								break;
+						}
 
 						out.push_back(std::make_unique<ir::Stmt>(ir::Stmt(std::move(s))));
 					},
@@ -1379,9 +1435,14 @@ namespace yasme::macro
 						if (node.step)
 							s.step = expand_expr(*node.step, env);
 
+						RuntimeCfGuard cf(this);
 						LoopDepthGuard guard(this);
 						for (auto const& st2 : node.body)
+						{
 							expand_stmt(*st2, env, s.body);
+							if (aborting_current_macro(env))
+								break;
+						}
 
 						out.push_back(std::make_unique<ir::Stmt>(ir::Stmt(std::move(s))));
 					},
@@ -1391,9 +1452,14 @@ namespace yasme::macro
 						s.var = node.var;
 						s.str = expand_expr(node.str, env);
 
+						RuntimeCfGuard cf(this);
 						LoopDepthGuard guard(this);
 						for (auto const& st2 : node.body)
+						{
 							expand_stmt(*st2, env, s.body);
+							if (aborting_current_macro(env))
+								break;
+						}
 
 						out.push_back(std::make_unique<ir::Stmt>(ir::Stmt(std::move(s))));
 					},
@@ -1463,7 +1529,9 @@ namespace yasme::macro
 										env->values.erase(it_value);
 									}
 									else
+									{
 										env->shadowed_locals.emplace(name, MacroValueUnknown{});
+									}
 
 									r.kind = RestoreKind::restore_shadowed_local;
 								}
@@ -1473,14 +1541,20 @@ namespace yasme::macro
 									r.value = std::move(it_value->second);
 								}
 								else
+								{
 									r.kind = RestoreKind::erase_value;
+								}
 
 								restores.push_back(std::move(r));
 								env->values[name] = MacroValueTokens{slice, tokens->origin_env};
 							}
 
 							for (auto const& st2 : node.on_match)
+							{
 								expand_stmt(*st2, env, out);
+								if (aborting_current_macro(env))
+									break;
+							}
 
 							for (auto it_restore = restores.rbegin(); it_restore != restores.rend();
 								 ++it_restore)
@@ -1505,7 +1579,9 @@ namespace yasme::macro
 											env->shadowed_locals.erase(it_local);
 										}
 										else
+										{
 											env->values[it_restore->name] = MacroValueUnknown{};
+										}
 									}
 									break;
 								}
@@ -1514,7 +1590,11 @@ namespace yasme::macro
 						else if (node.has_else)
 						{
 							for (auto const& st2 : node.on_else)
+							{
 								expand_stmt(*st2, env, out);
+								if (aborting_current_macro(env))
+									break;
+							}
 						}
 					},
 					[this, env, &out](fe::StmtVirtual const& node) {
@@ -1524,7 +1604,11 @@ namespace yasme::macro
 							virt.name_expr = expand_expr(*node.name_expr, env);
 
 						for (auto const& st2 : node.body)
+						{
 							expand_stmt(*st2, env, virt.body);
+							if (aborting_current_macro(env))
+								break;
+						}
 
 						out.push_back(std::make_unique<ir::Stmt>(ir::Stmt(std::move(virt))));
 					},
@@ -1534,7 +1618,11 @@ namespace yasme::macro
 						postpone.mode = node.mode;
 
 						for (auto const& st2 : node.body)
+						{
 							expand_stmt(*st2, env, postpone.body);
+							if (aborting_current_macro(env))
+								break;
+						}
 
 						out.push_back(std::make_unique<ir::Stmt>(ir::Stmt(std::move(postpone))));
 					},
@@ -1548,6 +1636,9 @@ namespace yasme::macro
 
 		void expand_normal(ir::Stmt const& st, MacroEnv* env, std::vector<ir::StmtPtr>& out)
 		{
+			if (aborting_current_macro(env))
+				return;
+
 			std::visit(
 				Overload{
 					[this, env, &out](ir::StmtOrg const& node) {
@@ -1570,7 +1661,6 @@ namespace yasme::macro
 								*slot = MacroValueExpr{std::move(rhs)};
 							else
 								env->values[node.name] = MacroValueExpr{std::move(rhs)};
-
 							return;
 						}
 
@@ -1676,20 +1766,24 @@ namespace yasme::macro
 						s.cond = expand_expr(node.cond, env);
 						s.has_else = node.has_else;
 
+						RuntimeCfGuard cf(this);
+
 						for (auto const& st2 : node.then_body)
 						{
 							if (!st2)
 								continue;
-
 							expand_normal(*st2, env, s.then_body);
+							if (aborting_current_macro(env))
+								break;
 						}
 
 						for (auto const& st2 : node.else_body)
 						{
 							if (!st2)
 								continue;
-
 							expand_normal(*st2, env, s.else_body);
+							if (aborting_current_macro(env))
+								break;
 						}
 
 						out.push_back(std::make_unique<ir::Stmt>(ir::Stmt(std::move(s))));
@@ -1699,14 +1793,17 @@ namespace yasme::macro
 						s.span = node.span;
 						s.count = expand_expr(node.count, env);
 
+						RuntimeCfGuard cf(this);
 						LoopDepthGuard guard(this);
 						for (auto const& st2 : node.body)
 						{
 							if (!st2)
 								continue;
-
 							expand_normal(*st2, env, s.body);
+							if (aborting_current_macro(env))
+								break;
 						}
+
 						out.push_back(std::make_unique<ir::Stmt>(ir::Stmt(std::move(s))));
 					},
 					[this, env, &out](ir::StmtWhile const& node) {
@@ -1714,14 +1811,17 @@ namespace yasme::macro
 						s.span = node.span;
 						s.cond = expand_expr(node.cond, env);
 
+						RuntimeCfGuard cf(this);
 						LoopDepthGuard guard(this);
 						for (auto const& st2 : node.body)
 						{
 							if (!st2)
 								continue;
-
 							expand_normal(*st2, env, s.body);
+							if (aborting_current_macro(env))
+								break;
 						}
+
 						out.push_back(std::make_unique<ir::Stmt>(ir::Stmt(std::move(s))));
 					},
 					[this, env, &out](ir::StmtForNumeric const& node) {
@@ -1733,14 +1833,17 @@ namespace yasme::macro
 						if (node.step)
 							s.step = expand_expr(*node.step, env);
 
+						RuntimeCfGuard cf(this);
 						LoopDepthGuard guard(this);
 						for (auto const& st2 : node.body)
 						{
 							if (!st2)
 								continue;
-
 							expand_normal(*st2, env, s.body);
+							if (aborting_current_macro(env))
+								break;
 						}
+
 						out.push_back(std::make_unique<ir::Stmt>(ir::Stmt(std::move(s))));
 					},
 					[this, env, &out](ir::StmtForChars const& node) {
@@ -1749,14 +1852,17 @@ namespace yasme::macro
 						s.var = node.var;
 						s.str = expand_expr(node.str, env);
 
+						RuntimeCfGuard cf(this);
 						LoopDepthGuard guard(this);
 						for (auto const& st2 : node.body)
 						{
 							if (!st2)
 								continue;
-
 							expand_normal(*st2, env, s.body);
+							if (aborting_current_macro(env))
+								break;
 						}
+
 						out.push_back(std::make_unique<ir::Stmt>(ir::Stmt(std::move(s))));
 					},
 					[this, env, &out](ir::StmtBreak const& node) {
@@ -1774,6 +1880,9 @@ namespace yasme::macro
 							ir::StmtMacroReturn s{};
 							s.span = node.span;
 							out.push_back(std::make_unique<ir::Stmt>(ir::Stmt(std::move(s))));
+
+							if (m_runtime_cf_depth == 0)
+								m_return_depth = m_call_stack.size();
 							return;
 						}
 
@@ -1832,6 +1941,8 @@ namespace yasme::macro
 			if (!push_call(call.callee, call.span, it->second.def->span))
 				return nullptr;
 
+			auto const depth = m_call_stack.size();
+
 			MacroEnv env{};
 			if (!bind_params(call, *it->second.def, outer, env))
 			{
@@ -1860,9 +1971,17 @@ namespace yasme::macro
 			}
 
 			for (auto const& st : it->second.def->body)
+			{
 				expand_stmt(*st, &env, body);
+				if (aborting_current_macro(&env))
+					break;
+			}
+
+			if (m_return_depth != 0 && m_return_depth == depth)
+				m_return_depth = 0;
 
 			pop_call();
+
 			ir::StmtMacroScope scope{};
 			scope.span = call.span;
 			scope.body = std::move(body);
@@ -1893,6 +2012,8 @@ namespace yasme::macro
 		std::unordered_map<std::string, std::unique_ptr<fe::Program>> m_include_programs{};
 		std::vector<std::size_t> m_call_loop_base_stack{};
 		std::size_t m_loop_depth{};
+		std::size_t m_return_depth{};
+		std::size_t m_runtime_cf_depth{};
 		std::vector<std::vector<lex::Token>> m_generated_token_lists{};
 		std::deque<std::string> m_generated_token_lexemes{};
 	};
