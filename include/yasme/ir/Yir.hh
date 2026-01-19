@@ -57,6 +57,8 @@ namespace yasme::ir
 	};
 
 	struct Expr;
+	struct StmtMacroScope;
+	struct StmtMacroReturn;
 
 	struct ExprIdent
 	{
@@ -256,6 +258,17 @@ namespace yasme::ir
 		std::vector<StmtPtr> body{};
 	};
 
+	struct StmtMacroScope
+	{
+		SourceSpan span{};
+		std::vector<StmtPtr> body{};
+	};
+
+	struct StmtMacroReturn
+	{
+		SourceSpan span{};
+	};
+
 	struct StmtEnd
 	{
 		SourceSpan span{};
@@ -279,6 +292,8 @@ namespace yasme::ir
 								  StmtBreak,
 								  StmtContinue,
 								  StmtError,
+								  StmtMacroScope,
+								  StmtMacroReturn,
 								  StmtEnd>;
 
 		Node node{};
