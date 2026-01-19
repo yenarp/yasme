@@ -1,5 +1,6 @@
 macro emit_name name n
   db n
+  db @n
 end macro
 
 foo_bar = 0x66

@@ -59,6 +59,8 @@ The symbolic variable’s “pointee” is the identifier `target`. It can be:
 - dereferenced to obtain the pointee’s value
 - inspected with `@` to obtain the pointee’s name
 
+Macro `name` parameters bind as symbolic variables pointing at the passed name expression.
+
 ## `@` & `#` operator
 
 `@expr` asks for the **name** of what `expr` denotes.
@@ -226,13 +228,15 @@ emit_opcode 0x90
 ### Parameters
 
 * plain: expression (value mode when used normally)
-* `name`: argument must denote a **name** (identifier or concat result)
+* `name`: argument must denote a **name** (identifier or concat result); the parameter
+  is automatically bound as a **symbolic variable** pointing to that name
 * `ref`: argument must be an **identifier** and assignments inside macro write back to caller
 * `tokens`: argument will be parsed as a token list
 
 ```asm
 macro alias name new, name old
-	new = old          ; symbolic var: new points to old
+	; 'old' is already a symbolic variable pointing to the passed name
+	new = @old         ; symbolic var: new points to old's pointee
 end macro
 
 macro inc ref x
