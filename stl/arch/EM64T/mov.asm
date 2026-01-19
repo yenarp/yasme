@@ -32,7 +32,6 @@ macro mov_reg_reg tokens t
 			end error
 		end if
 
-	
 	end match
 end macro
 
@@ -87,26 +86,29 @@ macro mov tokens t
 	match t, [{dst}], [{src}]
 		error "Invalid operands", t
 		end error
-	else
-		match t, {dst}, [{src}]
-			mov_reg_deref_reg t
-		else
-			match t, [{dst}], {src}
-				mov_deref_reg_reg t
-			else
-				match t, {dst}, {src}
-					local srcnum
-					local srcsize
-					get_reg_num srcnum, srcsize, src
-
-					if srcnum == 0xFF ; immediate
-						mov_reg_imm t
-					else
-						mov_reg_reg t
-					end if
-
-				end match
-			end match
-		end match
 	end match
+	
+	match t, {dst}, [{src}]
+		mov_reg_deref_reg t
+		break
+	end match
+	
+	match t, [{dst}], {src}
+		mov_deref_reg_reg t
+		break
+	end match
+
+	match t, {dst}, {src}
+		local srcnum
+		local srcsize
+		get_reg_num srcnum, srcsize, src
+
+		if srcnum == 0xFF ; immediate
+			mov_reg_imm t
+		else
+			mov_reg_reg t
+		end if
+		break
+	end match
+
 end macro
