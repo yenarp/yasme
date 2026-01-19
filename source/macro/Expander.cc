@@ -42,6 +42,11 @@ namespace yasme::macro
 			ir::Expr expr{};
 		};
 
+		struct MacroValueSymbolicParam
+		{
+			ir::Expr expr{};
+		};
+
 		struct MacroValueTokens
 		{
 			TokenSlice slice{};
@@ -61,6 +66,7 @@ namespace yasme::macro
 
 		using MacroValue = std::variant<MacroValueUnknown,
 										MacroValueExpr,
+										MacroValueSymbolicParam,
 										MacroValueTokens,
 										MacroValueRefSymbol,
 										MacroValueRefLocal>;
@@ -544,6 +550,8 @@ namespace yasme::macro
 
 				if (auto const* val = std::get_if<MacroValueExpr>(&it->second))
 					return clone_expr(val->expr);
+				if (std::holds_alternative<MacroValueSymbolicParam>(it->second))
+					return clone_expr(expr);
 				if (auto const* val = std::get_if<MacroValueRefSymbol>(&it->second))
 					return ir::Expr(expr.span, ir::ExprIdent{val->name});
 				if (auto const* val = std::get_if<MacroValueRefLocal>(&it->second))
@@ -820,7 +828,10 @@ namespace yasme::macro
 								   + "' requires a name expression argument");
 				}
 
-				env.values[param.name] = MacroValueExpr{std::move(expr)};
+				if (param.kind == fe::MacroParamKind::name)
+					env.values[param.name] = MacroValueSymbolicParam{std::move(expr)};
+				else
+					env.values[param.name] = MacroValueExpr{std::move(expr)};
 			}
 
 			return true;
@@ -1487,6 +1498,26 @@ namespace yasme::macro
 			{
 				pop_call();
 				return nullptr;
+			}
+
+			for (auto const& param : it->second.def->params)
+			{
+				if (param.kind != fe::MacroParamKind::name)
+					continue;
+
+				auto it_value = env.values.find(param.name);
+				if (it_value == env.values.end())
+					continue;
+
+				auto const* binding = std::get_if<MacroValueSymbolicParam>(&it_value->second);
+				if (!binding)
+					continue;
+
+				ir::StmtAssign s{};
+				s.span = call.span;
+				s.name = param.name;
+				s.rhs = clone_expr(binding->expr);
+				body.push_back(std::make_unique<ir::Stmt>(ir::Stmt(std::move(s))));
 			}
 
 			for (auto const& st : it->second.def->body)
