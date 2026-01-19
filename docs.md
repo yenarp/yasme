@@ -295,13 +295,22 @@ In this call, commas inside bracketed or parenthesized constructs belong to the 
 Syntax:
 ```
 eval out_variable, tokens_param_name
+eval out_tokens, pattern terminated by newline
+eval *out_variable, pattern terminated by newline
 ```
 
 ##### Semantics
 
-- Parse tokens_param_name using the normal expression grammar.
-- Evaluate the resulting expression in value mode.
-- Assign the result to out_variable.
+- `eval out_variable, tokens_param_name` parses that token list using the normal expression
+  grammar, evaluates in value mode, and assigns the result to out_variable.
+- `eval out_tokens, pattern ...` **formats** a token list from the pattern and assigns it to
+  out_tokens (a tokens binding). This does not evaluate the expression.
+- `eval *out_variable, pattern ...` formats a token list from the pattern, parses it, evaluates
+  it in value mode, and assigns the result to out_variable.
+- In patterns, `{name}` splices a tokens binding named `name` into the output token list.
+  It may also refer to macro locals or bindings holding expressions (numeric or string),
+  which are converted into tokens and evaluated later by the assembler.
+- Wildcards (`_`) and ellipsis (`...`) are not allowed in eval patterns.
 - If parsing fails, error at the token span.
 - If evaluation is unresolved this pass, out_variable becomes unresolved like any other numeric assignment. 
 
@@ -313,6 +322,15 @@ macro imm8 tokens t
 end macro
 
 imm8 1 + 2*3
+```
+
+Pattern example:
+```
+macro imm8 tokens t
+	eval tmp, ({t})
+	eval *x, ({t})
+	db x
+end macro
 ```
 
 #### Match

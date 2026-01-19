@@ -1,3 +1,4 @@
+#include <deque>
 #include <limits>
 #include <memory>
 #include <string>
@@ -665,6 +666,306 @@ namespace yasme::macro
 			return MacroValueTokens{slice, outer};
 		}
 
+		[[nodiscard]] std::string_view store_generated_lexeme(std::string text)
+		{
+			m_generated_token_lexemes.push_back(std::move(text));
+			return m_generated_token_lexemes.back();
+		}
+
+		[[nodiscard]] lex::Token make_token(lex::TokenKind kind, SourceSpan span) noexcept
+		{
+			lex::Token tok{};
+			tok.kind = kind;
+			tok.span = span;
+			return tok;
+		}
+
+		[[nodiscard]] lex::Token make_ident_token(std::string_view name, SourceSpan span)
+		{
+			lex::Token tok{};
+			tok.kind = lex::TokenKind::identifier;
+			tok.span = span;
+			tok.lexeme = store_generated_lexeme(std::string(name));
+			return tok;
+		}
+
+		[[nodiscard]] lex::Token make_uint_token(std::uint64_t value, SourceSpan span)
+		{
+			lex::Token tok{};
+			tok.kind = lex::TokenKind::integer;
+			tok.span = span;
+			tok.lexeme = store_generated_lexeme(std::to_string(value));
+			tok.integer.value = value;
+			tok.integer.base = lex::NumberBase::decimal;
+			tok.integer.overflow = false;
+			return tok;
+		}
+
+		[[nodiscard]] lex::Token make_int_token(std::int64_t value, SourceSpan span)
+		{
+			return make_uint_token(static_cast<std::uint64_t>(value), span);
+		}
+
+		[[nodiscard]] lex::Token make_str_token(std::string_view value, SourceSpan span)
+		{
+			lex::Token tok{};
+			tok.kind = lex::TokenKind::string;
+			tok.span = span;
+			tok.lexeme = store_generated_lexeme(std::string(value));
+			return tok;
+		}
+
+		[[nodiscard]] lex::Token make_unary_token(ir::UnaryOp op, SourceSpan span)
+		{
+			switch (op)
+			{
+				case ir::UnaryOp::plus:
+					return make_token(lex::TokenKind::plus, span);
+				case ir::UnaryOp::minus:
+					return make_token(lex::TokenKind::minus, span);
+				case ir::UnaryOp::bit_not:
+					return make_token(lex::TokenKind::tilde, span);
+				case ir::UnaryOp::log_not:
+					return make_token(lex::TokenKind::bang, span);
+				case ir::UnaryOp::at:
+					return make_token(lex::TokenKind::at, span);
+			}
+			return make_token(lex::TokenKind::invalid, span);
+		}
+
+		[[nodiscard]] lex::Token make_binary_token(ir::BinaryOp op, SourceSpan span)
+		{
+			switch (op)
+			{
+				case ir::BinaryOp::add:
+					return make_token(lex::TokenKind::plus, span);
+				case ir::BinaryOp::sub:
+					return make_token(lex::TokenKind::minus, span);
+				case ir::BinaryOp::mul:
+					return make_token(lex::TokenKind::star, span);
+				case ir::BinaryOp::div:
+					return make_token(lex::TokenKind::slash, span);
+				case ir::BinaryOp::mod:
+					return make_token(lex::TokenKind::percent, span);
+				case ir::BinaryOp::shl:
+					return make_token(lex::TokenKind::shl, span);
+				case ir::BinaryOp::shr:
+					return make_token(lex::TokenKind::shr, span);
+				case ir::BinaryOp::bit_and:
+					return make_token(lex::TokenKind::amp, span);
+				case ir::BinaryOp::bit_or:
+					return make_token(lex::TokenKind::pipe, span);
+				case ir::BinaryOp::bit_xor:
+					return make_token(lex::TokenKind::caret, span);
+				case ir::BinaryOp::log_and:
+					return make_token(lex::TokenKind::andand, span);
+				case ir::BinaryOp::log_or:
+					return make_token(lex::TokenKind::oror, span);
+				case ir::BinaryOp::eq:
+					return make_token(lex::TokenKind::eqeq, span);
+				case ir::BinaryOp::ne:
+					return make_token(lex::TokenKind::ne, span);
+				case ir::BinaryOp::lt:
+					return make_token(lex::TokenKind::lt, span);
+				case ir::BinaryOp::le:
+					return make_token(lex::TokenKind::le, span);
+				case ir::BinaryOp::gt:
+					return make_token(lex::TokenKind::gt, span);
+				case ir::BinaryOp::ge:
+					return make_token(lex::TokenKind::ge, span);
+				case ir::BinaryOp::concat:
+					return make_token(lex::TokenKind::hash, span);
+			}
+			return make_token(lex::TokenKind::invalid, span);
+		}
+
+		void append_expr_tokens(std::vector<lex::Token>& out, ir::Expr const& expr)
+		{
+			std::visit(Overload{
+						   [&](ir::ExprIdent const& id) {
+							   out.push_back(make_ident_token(id.name, expr.span));
+						   },
+						   [&](ir::ExprInt const& i) {
+							   if (i.value < 0)
+							   {
+								   auto abs = (i.value == std::numeric_limits<std::int64_t>::min())
+												  ? static_cast<std::uint64_t>(
+														std::numeric_limits<std::int64_t>::max())
+														+ 1
+												  : static_cast<std::uint64_t>(-i.value);
+
+								   out.push_back(make_token(lex::TokenKind::lparen, expr.span));
+								   out.push_back(make_token(lex::TokenKind::minus, expr.span));
+								   out.push_back(make_uint_token(abs, expr.span));
+								   out.push_back(make_token(lex::TokenKind::rparen, expr.span));
+							   }
+							   else
+							   {
+								   out.push_back(make_int_token(i.value, expr.span));
+							   }
+						   },
+						   [&](ir::ExprStr const& s) {
+							   out.push_back(make_str_token(s.value, expr.span));
+						   },
+						   [&](ir::ExprBuiltin const& b) {
+							   out.push_back(make_token(lex::TokenKind::lparen, expr.span));
+							   switch (b.kind)
+							   {
+								   case ir::BuiltinKind::dollar_address:
+									   out.push_back(make_token(lex::TokenKind::dollar, expr.span));
+									   break;
+								   case ir::BuiltinKind::stream_offset:
+									   out.push_back(make_token(lex::TokenKind::at, expr.span));
+									   out.push_back(make_token(lex::TokenKind::dollar, expr.span));
+									   break;
+							   }
+							   out.push_back(make_token(lex::TokenKind::rparen, expr.span));
+						   },
+						   [&](ir::ExprUnary const& u) {
+							   out.push_back(make_token(lex::TokenKind::lparen, expr.span));
+							   out.push_back(make_unary_token(u.op, expr.span));
+							   if (u.rhs)
+								   append_expr_tokens(out, *u.rhs);
+							   out.push_back(make_token(lex::TokenKind::rparen, expr.span));
+						   },
+						   [&](ir::ExprBinary const& b) {
+							   out.push_back(make_token(lex::TokenKind::lparen, expr.span));
+							   if (b.lhs)
+								   append_expr_tokens(out, *b.lhs);
+							   out.push_back(make_binary_token(b.op, expr.span));
+							   if (b.rhs)
+								   append_expr_tokens(out, *b.rhs);
+							   out.push_back(make_token(lex::TokenKind::rparen, expr.span));
+						   },
+					   },
+					   expr.node);
+		}
+
+		[[nodiscard]] TokenSlice store_generated_tokens(std::vector<lex::Token>&& tokens)
+		{
+			m_generated_token_lists.push_back(std::move(tokens));
+			auto const& stored = m_generated_token_lists.back();
+			return make_token_slice(stored.data(), stored.data() + stored.size());
+		}
+
+		[[nodiscard]] bool append_eval_splice_tokens(std::vector<lex::Token>& out,
+													 std::string const& name,
+													 SourceSpan span,
+													 MacroEnv const& env)
+		{
+			auto it = env.values.find(name);
+			if (it == env.values.end())
+			{
+				emit_error(span, "unknown binding '" + name + "' in eval pattern");
+				return false;
+			}
+
+			auto const append_tokens = [&](TokenSlice slice) {
+				if (slice.begin && slice.end)
+					for (auto it_tok = slice.begin; it_tok != slice.end; ++it_tok)
+						out.push_back(*it_tok);
+			};
+
+			if (auto const* tokens = std::get_if<MacroValueTokens>(&it->second))
+			{
+				append_tokens(tokens->slice);
+				return true;
+			}
+
+			if (auto const* expr = std::get_if<MacroValueExpr>(&it->second))
+			{
+				append_expr_tokens(out, expr->expr);
+				return true;
+			}
+
+			if (auto const* expr = std::get_if<MacroValueSymbolicParam>(&it->second))
+			{
+				append_expr_tokens(out, expr->expr);
+				return true;
+			}
+
+			if (auto const* ref = std::get_if<MacroValueRefSymbol>(&it->second))
+			{
+				out.push_back(make_ident_token(ref->name, span));
+				return true;
+			}
+
+			if (auto const* ref = std::get_if<MacroValueRefLocal>(&it->second))
+			{
+				auto expr = expand_ref_local_expr(span, *ref);
+				append_expr_tokens(out, expr);
+				return true;
+			}
+
+			emit_error(span, "macro local '" + name + "' used before assignment");
+			return false;
+		}
+
+		[[nodiscard]] std::optional<TokenSlice> format_eval_pattern(TokenSlice pattern,
+																	MacroEnv const& env)
+		{
+			if (!pattern.begin || !pattern.end)
+				return std::nullopt;
+
+			auto* begin = pattern.begin;
+			auto* end = pattern.end;
+			auto count = static_cast<std::size_t>(end - begin);
+
+			std::vector<lex::Token> out{};
+			out.reserve(count);
+
+			for (std::size_t i = 0; i < count; ++i)
+			{
+				auto const& tok = begin[i];
+
+				if (tok.kind == lex::TokenKind::lbrace)
+				{
+					if (i + 2 >= count)
+					{
+						emit_error(tok.span, "expected '{name}' in eval pattern");
+						return std::nullopt;
+					}
+
+					auto const& name_tok = begin[i + 1];
+					if (name_tok.kind != lex::TokenKind::identifier)
+					{
+						emit_error(name_tok.span, "expected identifier after '{' in eval pattern");
+						return std::nullopt;
+					}
+
+					if (begin[i + 2].kind != lex::TokenKind::rbrace)
+					{
+						emit_error(name_tok.span, "expected '}' after eval pattern binding");
+						return std::nullopt;
+					}
+
+					auto bind_name = std::string(name_tok.lexeme);
+					if (!append_eval_splice_tokens(out, bind_name, name_tok.span, env))
+						return std::nullopt;
+
+					i += 2;
+					continue;
+				}
+
+				if (tok.kind == lex::TokenKind::rbrace)
+				{
+					emit_error(tok.span, "unexpected '}' in eval pattern");
+					return std::nullopt;
+				}
+
+				if (tok.kind == lex::TokenKind::ellipsis
+					|| (tok.kind == lex::TokenKind::identifier && tok.lexeme == "_"))
+				{
+					emit_error(tok.span, "wildcard/ellipsis not allowed in eval pattern");
+					return std::nullopt;
+				}
+
+				out.push_back(tok);
+			}
+
+			return store_generated_tokens(std::move(out));
+		}
+
 		[[nodiscard]] std::vector<TokenSlice> split_call_args(TokenSlice raw,
 															  std::size_t split_commas)
 		{
@@ -950,24 +1251,62 @@ namespace yasme::macro
 							return;
 						}
 
-						auto it = env->values.find(node.tokens_name);
-						if (it == env->values.end())
+						TokenSlice tokens_slice{};
+						MacroEnv const* origin_env = env;
+
+						if (node.input_kind == fe::StmtEval::InputKind::tokens_name)
 						{
-							emit_error(node.span,
-									   "unknown tokens parameter '" + node.tokens_name + "'");
+							auto it = env->values.find(node.tokens_name);
+							if (it == env->values.end())
+							{
+								emit_error(node.span,
+										   "unknown tokens parameter '" + node.tokens_name + "'");
+								return;
+							}
+
+							auto const* tokens = std::get_if<MacroValueTokens>(&it->second);
+							if (!tokens)
+							{
+								emit_error(node.span,
+										   "'" + node.tokens_name + "' is not a tokens parameter");
+								return;
+							}
+
+							tokens_slice = tokens->slice;
+							origin_env = tokens->origin_env ? tokens->origin_env : env;
+						}
+						else
+						{
+							auto formatted = format_eval_pattern(node.pattern, *env);
+							if (!formatted)
+								return;
+
+							tokens_slice = *formatted;
+						}
+
+						if (node.output_kind == fe::StmtEval::OutputKind::tokens)
+						{
+							if (env->refs.contains(node.out_name))
+							{
+								emit_error(node.span,
+										   "cannot assign tokens to ref parameter '" + node.out_name
+											   + "'");
+								return;
+							}
+
+							MacroValueTokens tokens_val{tokens_slice, origin_env};
+							if (env->locals.contains(node.out_name))
+								if (auto* slot = lookup_local_value(*env, node.out_name))
+									*slot = tokens_val;
+								else
+									env->values[node.out_name] = tokens_val;
+							else
+								env->values[node.out_name] = tokens_val;
 							return;
 						}
 
-						auto const* tokens = std::get_if<MacroValueTokens>(&it->second);
-						if (!tokens)
-						{
-							emit_error(node.span,
-									   "'" + node.tokens_name + "' is not a tokens parameter");
-							return;
-						}
-
-						auto expr = parse_expr(tokens->slice);
-						expr = expand_expr(expr, tokens->origin_env ? tokens->origin_env : env);
+						auto expr = parse_expr(tokens_slice);
+						expr = expand_expr(expr, origin_env);
 
 						if (env->locals.contains(node.out_name))
 						{
@@ -1554,6 +1893,8 @@ namespace yasme::macro
 		std::unordered_map<std::string, std::unique_ptr<fe::Program>> m_include_programs{};
 		std::vector<std::size_t> m_call_loop_base_stack{};
 		std::size_t m_loop_depth{};
+		std::vector<std::vector<lex::Token>> m_generated_token_lists{};
+		std::deque<std::string> m_generated_token_lexemes{};
 	};
 
 	Expander::Expander(SourceManager& sources, Diagnostics& diag) noexcept

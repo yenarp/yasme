@@ -55,9 +55,24 @@ namespace yasme::fe
 
 	struct StmtEval
 	{
+		enum class InputKind
+		{
+			tokens_name,
+			pattern,
+		};
+
+		enum class OutputKind
+		{
+			value,
+			tokens,
+		};
+
 		SourceSpan span{};
 		std::string out_name{};
+		InputKind input_kind{InputKind::tokens_name};
+		OutputKind output_kind{OutputKind::value};
 		std::string tokens_name{};
+		macro::TokenSlice pattern{};
 	};
 
 	struct StmtVirtual

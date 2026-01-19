@@ -646,6 +646,13 @@ namespace yasme::fe
 	{
 		auto kw = consume();
 
+		bool force_pattern_eval = false;
+		if (cur().is(lex::TokenKind::star))
+		{
+			force_pattern_eval = true;
+			consume();
+		}
+
 		if (!cur().is(lex::TokenKind::identifier))
 		{
 			add_error(cur().span, "expected output identifier after 'eval'");
@@ -657,18 +664,43 @@ namespace yasme::fe
 		if (!expect(lex::TokenKind::comma, "expected ',' after eval output"))
 			return nullptr;
 
-		if (!cur().is(lex::TokenKind::identifier))
+		StmtEval st{};
+		st.span = kw.span;
+		st.out_name = std::string(out_tok.lexeme);
+
+		if (!force_pattern_eval)
 		{
-			add_error(cur().span, "expected tokens parameter name after ','");
+			auto tokens_start = m_index;
+			if (cur().is(lex::TokenKind::identifier))
+			{
+				auto tokens_tok = consume();
+				if (cur().is(lex::TokenKind::newline) || cur().is(lex::TokenKind::eof))
+				{
+					st.span = merge_spans(kw.span, tokens_tok.span);
+					st.input_kind = StmtEval::InputKind::tokens_name;
+					st.output_kind = StmtEval::OutputKind::value;
+					st.tokens_name = std::string(tokens_tok.lexeme);
+					return std::make_unique<Stmt>(Stmt(std::move(st)));
+				}
+				m_index = tokens_start;
+			}
+		}
+
+		auto pattern_start = m_index;
+		while (!cur().is(lex::TokenKind::newline) && !cur().is(lex::TokenKind::eof))
+			advance();
+
+		if (pattern_start == m_index)
+		{
+			add_error(cur().span, "expected eval pattern after ','");
 			return nullptr;
 		}
 
-		auto tokens_tok = consume();
-
-		StmtEval st{};
-		st.span = merge_spans(kw.span, tokens_tok.span);
-		st.out_name = std::string(out_tok.lexeme);
-		st.tokens_name = std::string(tokens_tok.lexeme);
+		st.input_kind = StmtEval::InputKind::pattern;
+		st.output_kind =
+			force_pattern_eval ? StmtEval::OutputKind::value : StmtEval::OutputKind::tokens;
+		st.pattern = slice_from_indices(pattern_start, m_index);
+		st.span = merge_spans(kw.span, st.pattern.span);
 		return std::make_unique<Stmt>(Stmt(std::move(st)));
 	}
 
