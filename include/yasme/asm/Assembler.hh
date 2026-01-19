@@ -121,6 +121,7 @@ namespace yasme
 				none,
 				break_,
 				continue_,
+				macro_return,
 			};
 
 			Kind kind{Kind::none};
@@ -150,6 +151,8 @@ namespace yasme
 		[[nodiscard]] Flow apply_while(PassState& st, ir::StmtWhile const& s);
 		[[nodiscard]] Flow apply_for_numeric(PassState& st, ir::StmtForNumeric const& s);
 		[[nodiscard]] Flow apply_for_chars(PassState& st, ir::StmtForChars const& s);
+		Flow apply_macro_scope(PassState& st, ir::StmtMacroScope const& s);
+
 		void apply_error(PassState& st, ir::StmtError const& s);
 
 		[[nodiscard]] Value eval_value(PassState& st, ir::Expr const& e);

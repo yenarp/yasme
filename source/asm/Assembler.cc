@@ -217,6 +217,13 @@ namespace yasme
 					apply_postpone(st, s);
 					return {};
 				},
+				[&](ir::StmtMacroScope const& s) -> Flow { return apply_macro_scope(st, s); },
+				[&](ir::StmtMacroReturn const& s) -> Flow {
+					Flow f{};
+					f.kind = Flow::Kind::macro_return;
+					f.span = s.span;
+					return f;
+				},
 				[&](ir::StmtIf const& s) -> Flow { return apply_if(st, s); },
 				[&](ir::StmtRepeat const& s) -> Flow { return apply_repeat(st, s); },
 				[&](ir::StmtWhile const& s) -> Flow { return apply_while(st, s); },
@@ -260,14 +267,24 @@ namespace yasme
 	{
 		auto f = walk_stmt_cf(st, stmt);
 		if (f.kind != Flow::Kind::none)
-			error(st, f.span, "break/continue used outside of a loop");
+		{
+			if (f.kind == Flow::Kind::macro_return)
+				error(st, f.span, "macro return used outside of a macro scope");
+			else
+				error(st, f.span, "break/continue used outside of a loop");
+		}
 	}
 
 	void Assembler::walk_block(PassState& st, std::vector<ir::StmtPtr> const& body)
 	{
 		auto f = walk_block_cf(st, body);
 		if (f.kind != Flow::Kind::none)
-			error(st, f.span, "break/continue used outside of a loop");
+		{
+			if (f.kind == Flow::Kind::macro_return)
+				error(st, f.span, "macro return used outside of a macro scope");
+			else
+				error(st, f.span, "break/continue used outside of a loop");
+		}
 	}
 
 	void Assembler::run_postpone_each_pass(PassState& st)
@@ -279,6 +296,8 @@ namespace yasme
 				continue;
 
 			auto f = walk_block_cf(st, p->body);
+			if (f.kind == Flow::Kind::macro_return)
+				continue;
 			if (f.kind != Flow::Kind::none)
 				error(st, f.span, "break/continue used outside of a loop");
 		}
@@ -293,6 +312,8 @@ namespace yasme
 				continue;
 
 			auto f = walk_block_cf(st, p->body);
+			if (f.kind == Flow::Kind::macro_return)
+				continue;
 			if (f.kind != Flow::Kind::none)
 				error(st, f.span, "break/continue used outside of a loop");
 		}
@@ -711,6 +732,8 @@ namespace yasme
 		st.dollar_address = it->second.origin + it->second.bytes.size();
 
 		auto f = walk_block_cf(st, s.body);
+		if (f.kind == Flow::Kind::macro_return)
+			f = {};
 		if (f.kind != Flow::Kind::none)
 			error(st, f.span, "break/continue used outside of a loop");
 
@@ -754,6 +777,15 @@ namespace yasme
 		if (v > static_cast<__int128>(std::numeric_limits<std::int64_t>::max()))
 			return std::nullopt;
 		return static_cast<std::int64_t>(v);
+	}
+
+	Assembler::Flow Assembler::apply_macro_scope(PassState& st, ir::StmtMacroScope const& s)
+	{
+		auto f = walk_block_cf(st, s.body);
+		if (f.kind == Flow::Kind::macro_return)
+			return {};
+
+		return f;
 	}
 
 	Assembler::Flow Assembler::apply_if(PassState& st, ir::StmtIf const& s)
@@ -816,6 +848,8 @@ namespace yasme
 		for (std::int64_t i = 0; i < count; ++i)
 		{
 			auto f = walk_block_cf(st, s.body);
+			if (f.kind == Flow::Kind::macro_return)
+				return f;
 			if (f.kind == Flow::Kind::break_)
 				return {};
 			if (f.kind == Flow::Kind::continue_)
@@ -915,6 +949,8 @@ namespace yasme
 			set_var(cur);
 
 			auto f = walk_block_cf(st, s.body);
+			if (f.kind == Flow::Kind::macro_return)
+				return f;
 			if (f.kind == Flow::Kind::break_)
 				break;
 			if (f.kind == Flow::Kind::continue_)
@@ -1008,6 +1044,8 @@ namespace yasme
 			set_var(c);
 
 			auto f = walk_block_cf(st, s.body);
+			if (f.kind == Flow::Kind::macro_return)
+				return f;
 			if (f.kind == Flow::Kind::break_)
 				break;
 			if (f.kind == Flow::Kind::continue_)
@@ -1076,6 +1114,8 @@ namespace yasme
 			}
 
 			auto f = walk_block_cf(tmp, s.body);
+			if (f.kind == Flow::Kind::macro_return)
+				return f;
 			if (f.kind == Flow::Kind::break_)
 				break;
 			if (f.kind == Flow::Kind::continue_)
